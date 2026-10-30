@@ -5,6 +5,7 @@ import type { Express } from "express";
 import { z } from "zod";
 import { AsyncLocalStorage } from "async_hooks";
 import { ExecuteCodeTool } from "./tools/ExecuteCodeTool";
+import { GetDesignContextTool } from "./tools/GetDesignContextTool";
 import { PluginBridge } from "./PluginBridge";
 import { RedisBridge } from "./RedisBridge";
 import { ConfigurationLoader } from "./ConfigurationLoader";
@@ -259,6 +260,7 @@ export class PenpotMcpServer {
     private initTools(): ToolInfo[] {
         const toolInstances: Tool<any>[] = [
             new ExecuteCodeTool(this),
+            new GetDesignContextTool(this),
             new HighLevelOverviewTool(this),
             new PenpotApiInfoTool(this, this.apiDocs),
             new ExportShapeTool(this),

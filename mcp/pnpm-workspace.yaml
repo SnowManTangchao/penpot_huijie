@@ -14,11 +14,17 @@ minimumReleaseAgeExclude:
   - fast-uri@3.1.3 || 3.1.4 || 3.1.5
   - ip-address@10.2.1 || 10.2.2 || 10.3.1
   - hono@4.12.34
+  - "@ai-sdk/gateway@4.0.130"
+  - "@ai-sdk/openai@4.0.105"
+  - "@ai-sdk/provider-utils@5.0.71"
+  - ai@7.0.157
+  - "@ai-sdk/openai-compatible@3.0.81"
 
 packages:
   - "packages/common"
   - "packages/server"
   - "packages/plugin"
+  - "packages/agent-poc"
 
 overrides:
   '@hono/node-server@<2.0.5': ^2.0.5
