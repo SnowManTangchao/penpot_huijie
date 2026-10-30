@@ -2,10 +2,8 @@
 
 ## HARD RULES (always apply — no exceptions)
 
-- **Never `git push`, force-push, or modify `git origin`** (or any other remote).
-  The user pushes from their own shell. If a push is required to surface the
-  agent's work (e.g. force-push after an amend), state this in the response and
-  wait for the user to push. Do not change the remote URL, do not switch SSH↔HTTPS.
+- **仅在用户明确要求时执行 `git push`**，推送前核对目标远程和分支。
+  强制推送及修改远程配置需要用户分别明确授权。
 - **Never amend a commit that has been pushed** unless the user explicitly asks.
   If the user pushes, treat that commit as final from the agent's side.
 - **Never edit `CHANGES.md` by hand** in commits or PRs. The changelog is
