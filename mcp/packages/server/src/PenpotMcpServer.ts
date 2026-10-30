@@ -293,13 +293,16 @@ export class PenpotMcpServer {
     /**
      * Creates a fresh {@link McpServer} instance with all tools registered.
      */
-    private createMcpServer(): McpServer {
+    private createMcpServer(readOnly = false): McpServer {
         const server = new McpServer(
             { name: "penpot", version: "1.0.0" },
             { instructions: this.connectionInstructions }
         );
 
         for (const tool of this.tools) {
+            if (readOnly && tool.name !== "get_current_design_context") {
+                continue;
+            }
             server.registerTool(tool.name, tool.config, async (args) => tool.instance.execute(args));
         }
 
@@ -307,6 +310,24 @@ export class PenpotMcpServer {
     }
 
     private setupHttpEndpoints(): void {
+        // 原生助手仅提供固定只读工具；禁用单用户模式以防绕过用户隔离。
+        const agentHandler = toNodeHandler(createMcpHandler(() => this.createMcpServer(true)));
+        this.app.all("/mcp/agent", async (req, res) => {
+            if (!this.isMultiUserMode()) {
+                res.status(503).json({ error: "Native Agent requires multi-user MCP" });
+                return;
+            }
+            const auth = this.authentication.authenticate(req, res);
+            if (auth.isRejected) {
+                return;
+            }
+            if (!auth.userToken || req.query.userToken !== undefined) {
+                res.status(401).json({ error: "Bearer token required" });
+                return;
+            }
+            res.setHeader("Cache-Control", "no-store");
+            await this.sessionContext.run({ userToken: auth.userToken }, () => agentHandler(req, res, req.body));
+        });
         const handleMcpRequest = toNodeHandler(this.mcpHandler);
         this.app.all("/mcp", async (req, res) => {
             const authResult = this.authentication.authenticate(req, res);

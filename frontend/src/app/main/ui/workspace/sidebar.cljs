@@ -29,6 +29,7 @@
    [app.main.ui.ds.layout.tab-switcher :refer [tab-switcher*]]
    [app.main.ui.hooks :as hooks]
    [app.main.ui.hooks.resize :refer [use-resize-hook]]
+   [app.main.ui.workspace.ai-panel :refer [ai-panel*]]
    [app.main.ui.workspace.comments :refer [comments-sidebar*]]
    [app.main.ui.workspace.left-header :refer [left-header*]]
    [app.main.ui.workspace.right-header :refer [right-header*]]
@@ -283,7 +284,7 @@
         [:> history-toolbox*]])]))
 
 (mf/defc right-sidebar*
-  [{:keys [layout section file-id page-id drawing-tool active-tokens] :as props}]
+  [{:keys [layout section file-id page-id drawing-tool active-tokens selected] :as props}]
   (let [is-comments?     (= drawing-tool :comments)
         is-history?      (contains? layout :document-history)
         is-inspect?      (= section :inspect)
@@ -349,6 +350,9 @@
 
        [:div {:class (stl/css :right-sidebar-content)}
         (cond
+          (contains? layout :ai-panel)
+          [:> ai-panel* {:file-id file-id :page-id page-id :selected selected}]
+
           is-comments?
           [:> comments-sidebar* {}]
 

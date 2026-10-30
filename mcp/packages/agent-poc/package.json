@@ -3,6 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "serve": "tsx src/server.ts",
+    "serve:local": "node --env-file=.env.local --import tsx src/server.ts",
     "ask": "tsx src/cli.ts",
     "ask:local": "node --env-file=.env.local --import tsx src/cli.ts",
     "test": "tsx --test src/*.test.ts",

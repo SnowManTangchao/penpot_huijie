@@ -205,6 +205,11 @@
 
      [:& progress-widget]
 
+     [:> button* {:variant "ghost"
+                  :aria-pressed (contains? layout :ai-panel)
+                  :on-click #(st/emit! (dw/toggle-layout-flag :ai-panel))}
+      "AI"]
+
      [:div {:class (stl/css :separator)}]
 
      [:div {:class (stl/css :zoom-section)}

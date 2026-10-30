@@ -103,3 +103,55 @@ test("refuses to route a read to a session not owned by the authenticated user",
     });
     assert.match(JSON.stringify(result), /not connected/);
 });
+
+test("native Agent endpoint exposes only the fixed read tool", async () => {
+    const native = new Client({ name: "native-test", version: "1" });
+    try {
+        await native.connect(
+            new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.port}/mcp/agent`), {
+                requestInit: { headers: { Authorization: "Bearer alice" } },
+            })
+        );
+        assert.deepEqual(
+            (await native.listTools()).tools.map((item) => item.name),
+            ["get_current_design_context"]
+        );
+        socket.on("message", (raw) => {
+            const request = JSON.parse(raw.toString());
+            assert.equal(request.task, "getDesignContext");
+            socket.send(JSON.stringify({ id: request.id, success: true, data: context }));
+        });
+        const result = await native.callTool({
+            name: "get_current_design_context",
+            arguments: { ...scope, sessionId: "design-tab" },
+        });
+        assert.match(JSON.stringify(result), /当前页面/);
+        const foreign = await native.callTool({
+            name: "get_current_design_context",
+            arguments: { ...scope, sessionId: "bob-tab" },
+        });
+        assert.match(JSON.stringify(foreign), /not connected/);
+        await assert.rejects(native.callTool({ name: "execute_code", arguments: { code: "throw 1" } }), /not found/i);
+    } finally {
+        await native.close();
+    }
+});
+
+test("native endpoint rejects missing Bearer credentials and single-user mode", async () => {
+    const response = await fetch(`http://127.0.0.1:${server.port}/mcp/agent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+    });
+    assert.equal(response.status, 401);
+    process.env.PENPOT_MCP_SERVER_PORT = String(nextPort++);
+    process.env.PENPOT_MCP_WEBSOCKET_PORT = String(nextPort++);
+    const singleUser = new PenpotMcpServer(false);
+    try {
+        await singleUser.start();
+        const rejected = await fetch(`http://127.0.0.1:${singleUser.port}/mcp/agent`, { method: "POST" });
+        assert.equal(rejected.status, 503);
+    } finally {
+        await singleUser.stop();
+    }
+});
