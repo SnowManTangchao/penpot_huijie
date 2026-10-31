@@ -6,6 +6,7 @@ import { z } from "zod";
 import { AsyncLocalStorage } from "async_hooks";
 import { ExecuteCodeTool } from "./tools/ExecuteCodeTool";
 import { GetDesignContextTool } from "./tools/GetDesignContextTool";
+import { DesignPlanTool } from "./tools/DesignPlanTool";
 import { PluginBridge } from "./PluginBridge";
 import { RedisBridge } from "./RedisBridge";
 import { ConfigurationLoader } from "./ConfigurationLoader";
@@ -41,7 +42,11 @@ class ToolInfo {
     constructor(
         public readonly instance: Tool<any>,
         public readonly name: string,
-        public readonly config: { description: string; inputSchema: z.ZodObject<z.ZodRawShape> }
+        public readonly config: {
+            description: string;
+            inputSchema: z.ZodObject<z.ZodRawShape>;
+            annotations?: { readOnlyHint: boolean };
+        }
     ) {}
 }
 
@@ -261,6 +266,9 @@ export class PenpotMcpServer {
         const toolInstances: Tool<any>[] = [
             new ExecuteCodeTool(this),
             new GetDesignContextTool(this),
+            new DesignPlanTool(this, "prepare"),
+            new DesignPlanTool(this, "execute"),
+            new DesignPlanTool(this, "cancel"),
             new HighLevelOverviewTool(this),
             new PenpotApiInfoTool(this, this.apiDocs),
             new ExportShapeTool(this),
@@ -286,6 +294,11 @@ export class PenpotMcpServer {
             return new ToolInfo(instance, instance.getToolName(), {
                 description: instance.getToolDescription(),
                 inputSchema: z.object(instance.getInputSchema()),
+                annotations: {
+                    readOnlyHint:
+                        instance instanceof GetDesignContextTool ||
+                        (instance instanceof DesignPlanTool && instance.permission === "read"),
+                },
             });
         });
     }
@@ -293,14 +306,22 @@ export class PenpotMcpServer {
     /**
      * Creates a fresh {@link McpServer} instance with all tools registered.
      */
-    private createMcpServer(readOnly = false): McpServer {
+    private createMcpServer(nativeAgent = false): McpServer {
         const server = new McpServer(
             { name: "penpot", version: "1.0.0" },
             { instructions: this.connectionInstructions }
         );
 
         for (const tool of this.tools) {
-            if (readOnly && tool.name !== "get_current_design_context") {
+            if (
+                nativeAgent &&
+                ![
+                    "get_current_design_context",
+                    "prepare_design_plan",
+                    "execute_design_plan",
+                    "cancel_design_plan",
+                ].includes(tool.name)
+            ) {
                 continue;
             }
             server.registerTool(tool.name, tool.config, async (args) => tool.instance.execute(args));
@@ -310,7 +331,7 @@ export class PenpotMcpServer {
     }
 
     private setupHttpEndpoints(): void {
-        // 原生助手仅提供固定只读工具；禁用单用户模式以防绕过用户隔离。
+        // 原生助手仅提供固定数据工具；禁用单用户模式以防绕过用户隔离。
         const agentHandler = toNodeHandler(createMcpHandler(() => this.createMcpServer(true)));
         this.app.all("/mcp/agent", async (req, res) => {
             if (!this.isMultiUserMode()) {

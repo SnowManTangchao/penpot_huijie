@@ -4,6 +4,10 @@ import type { LanguageModel } from "ai";
 import { NativeDesignAgent, chatRequestSchema, type AgentEvent } from "./NativeDesignAgent";
 import { McpDesignContextSource } from "./McpDesignContextSource";
 import { PenpotSession } from "./PenpotSession";
+import { z } from "zod";
+import { editScopeSchema, executeDesignPlanSchema } from "@penpot/mcp-common";
+import { DesignPlanStore } from "./DesignPlanStore";
+import { AgentError } from "./AgentError";
 
 export interface AgentServerOptions {
     origin: string;
@@ -19,11 +23,12 @@ export class AgentHttpServer {
     });
     private readonly sessions: PenpotSession;
     private readonly active = new Set<string>();
+    private readonly plans = new DesignPlanStore();
 
     constructor(private readonly options: AgentServerOptions) {
         this.sessions = new PenpotSession(options.backend);
         if (options.mcp.pathname !== "/mcp/agent") {
-            throw new Error("原生助手必须使用 /mcp/agent 只读入口。");
+            throw new Error("原生助手必须使用 /mcp/agent 受控工具入口。");
         }
         this.server.requestTimeout = 15_000;
         this.server.headersTimeout = 10_000;
@@ -53,12 +58,14 @@ export class AgentHttpServer {
         try {
             const config = req.method === "GET" && req.url === "/api/agent/config";
             const chat = req.method === "POST" && req.url === "/api/agent/chat";
-            if (!config && !chat) {
+            const confirm = req.method === "POST" && req.url === "/api/agent/confirm";
+            const cancel = req.method === "POST" && req.url === "/api/agent/cancel";
+            if (!config && !chat && !confirm && !cancel) {
                 res.writeHead(404).end();
                 return;
             }
             if (
-                (chat && req.headers.origin !== this.options.origin) ||
+                (!config && req.headers.origin !== this.options.origin) ||
                 (req.headers.origin && req.headers.origin !== this.options.origin) ||
                 (req.headers["sec-fetch-site"] &&
                     !["same-origin", "none"].includes(String(req.headers["sec-fetch-site"])))
@@ -87,7 +94,52 @@ export class AgentHttpServer {
                 chunks.push(chunk);
             }
             stage = "请求无效，请缩短对话或重新打开 AI 面板。";
-            const request = chatRequestSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+            const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (confirm || cancel) {
+                const request = executeDesignPlanSchema
+                    .extend({ sessionId: z.string().min(1).max(128) })
+                    .strict()
+                    .parse(body);
+                const scope = editScopeSchema.parse({
+                    fileId: request.fileId,
+                    pageId: request.pageId,
+                    selectedIds: request.selectedIds,
+                    selectionCount: request.selectionCount,
+                });
+                stage = "请检查登录及文件编辑权限。";
+                const session = await this.sessions.authorize(
+                    req.headers.cookie ?? "",
+                    request.fileId,
+                    signal,
+                    confirm
+                );
+                stage = "计划已取消、过期或上下文已改变，请重新生成；若连接中断，请先检查画布，不会自动重试。";
+                if (cancel) {
+                    this.plans.cancel(session.profileId, request.sessionId, scope, request.planId);
+                    source = new McpDesignContextSource(scope, request.sessionId);
+                    await source.connect(this.options.mcp, session.token);
+                    await source.cancel(scope, request.planId);
+                    res.writeHead(200, { "Content-Type": "application/json" }).end(
+                        JSON.stringify({ status: "cancelled" })
+                    );
+                    return;
+                }
+                if (this.active.has(session.profileId) || this.active.size >= 32) {
+                    res.writeHead(429).end();
+                    return;
+                }
+                owner = session.profileId;
+                this.active.add(owner);
+                source = new McpDesignContextSource(scope, request.sessionId);
+                await source.connect(this.options.mcp, session.token);
+                const connected = source;
+                const result = await this.plans.execute(owner, request.sessionId, scope, request.planId, () =>
+                    connected.execute(scope, request.planId)
+                );
+                res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
+                return;
+            }
+            const request = chatRequestSchema.parse(body);
             const model = this.options.models.get(request.model);
             if (!model) {
                 throw new Error("模型未配置");
@@ -105,7 +157,21 @@ export class AgentHttpServer {
             await source.connect(this.options.mcp, session.token);
             res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "X-Accel-Buffering": "no" });
             await this.send(res, { type: "tool", name: "get_current_design_context", status: "running" }, signal);
-            for await (const event of new NativeDesignAgent(model, source).answer(request, signal)) {
+            const connected = source;
+            const scope = {
+                fileId: request.fileId,
+                pageId: request.pageId,
+                selectedIds: request.selectedIds,
+                selectionCount: request.selectionCount,
+            };
+            for await (const event of new NativeDesignAgent(model, source, async (operations) => {
+                stage = "无法生成计划：请确认文件编辑权限，目标未锁定、隐藏或删除，且页面和选区未改变。";
+                await this.sessions.authorize(req.headers.cookie ?? "", request.fileId, signal, true);
+                signal.throwIfAborted();
+                const plan = await connected.prepare(scope, operations);
+                this.plans.add(session.profileId, request.sessionId, scope, plan);
+                return plan;
+            }).answer(request, signal)) {
                 if (event.type === "context") {
                     await this.send(
                         res,
@@ -117,13 +183,16 @@ export class AgentHttpServer {
                 await this.send(res, event, signal);
             }
             res.end();
-        } catch {
+        } catch (error) {
             // 不回显 SDK 或后端原始异常，防止泄露请求头、密钥和设计数据。
             if (!res.destroyed) {
                 if (!res.headersSent) {
                     res.writeHead(400, { "Content-Type": "application/x-ndjson; charset=utf-8" });
                 }
-                res.end(JSON.stringify({ type: "error", message: stage }) + "\n");
+                res.end(
+                    JSON.stringify({ type: "error", message: error instanceof AgentError ? error.message : stage }) +
+                        "\n"
+                );
             }
         } finally {
             controller.abort();

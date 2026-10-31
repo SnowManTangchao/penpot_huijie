@@ -217,3 +217,15 @@
         (rx/push! stream (ptk/data-event :app.main.data.workspace.mcp/connect))
         (t/is (= 1 @calls))
         (rx/end! stream)))))
+
+(t/deftest test-bundled-plugin-initialization-avoids-stale-code-cache
+  (let [codes (atom [])]
+    (with-redefs [dp/start-plugin! (fn [manifest _] (swap! codes conj (:code manifest)))
+                  dp/close-plugin! (fn [_])]
+      (dotimes [_ 2]
+        (let [stream (rx/subject)]
+          (ptk/effect (#'mcp/init-mcp-plugin {:token "test-token"}) nil stream)
+          (rx/push! stream (ptk/data-event :app.main.data.workspace.mcp/init))
+          (rx/end! stream))))
+    (t/is (every? #(re-find #"^plugin\.js\?" %) @codes))
+    (t/is (apply not= @codes))))

@@ -104,7 +104,7 @@ test("refuses to route a read to a session not owned by the authenticated user",
     assert.match(JSON.stringify(result), /not connected/);
 });
 
-test("native Agent endpoint exposes only the fixed read tool", async () => {
+test("native Agent endpoint exposes only fixed data tools and no code execution", async () => {
     const native = new Client({ name: "native-test", version: "1" });
     try {
         await native.connect(
@@ -114,7 +114,7 @@ test("native Agent endpoint exposes only the fixed read tool", async () => {
         );
         assert.deepEqual(
             (await native.listTools()).tools.map((item) => item.name),
-            ["get_current_design_context"]
+            ["get_current_design_context", "prepare_design_plan", "execute_design_plan", "cancel_design_plan"]
         );
         socket.on("message", (raw) => {
             const request = JSON.parse(raw.toString());
@@ -154,4 +154,85 @@ test("native endpoint rejects missing Bearer credentials and single-user mode", 
     } finally {
         await singleUser.stop();
     }
+});
+
+test("fixed edit tools dispatch data and generate plan IDs on the server without executing code", async () => {
+    let planId = "";
+    socket.on("message", (raw) => {
+        const request = JSON.parse(raw.toString());
+        assert.equal(request.task, "designEdit");
+        assert.equal("code" in request.params.input, false);
+        if (request.params.action === "prepare") {
+            planId = request.params.input.planId;
+            assert.match(planId, /^[0-9a-f-]{36}$/);
+            socket.send(
+                JSON.stringify({
+                    id: request.id,
+                    success: true,
+                    data: {
+                        id: planId,
+                        expiresAt: Date.now() + 300000,
+                        outsideSelection: true,
+                        operations: request.params.input.operations,
+                        targets: [],
+                    },
+                })
+            );
+        } else {
+            assert.equal(request.params.input.planId, planId);
+            socket.send(
+                JSON.stringify({
+                    id: request.id,
+                    success: true,
+                    data: {
+                        planId,
+                        status: "success",
+                        steps: [{ tool: "create_rectangle", status: "success", shapeId: scope.fileId }],
+                    },
+                })
+            );
+        }
+    });
+    const input = { ...scope, selectedIds: [], selectionCount: 0 };
+    const preview = await client.callTool({
+        name: "prepare_design_plan",
+        arguments: {
+            sessionId: "design-tab",
+            input: {
+                ...input,
+                operations: [
+                    {
+                        tool: "create_rectangle",
+                        name: "矩形",
+                        x: 0,
+                        y: 0,
+                        width: 100,
+                        height: 40,
+                        color: "#0000FF",
+                        opacity: 1,
+                    },
+                ],
+            },
+        },
+    });
+    assert.match(JSON.stringify(preview), /outsideSelection/);
+    const result = await client.callTool({
+        name: "execute_design_plan",
+        arguments: {
+            sessionId: "design-tab",
+            input: { ...input, planId },
+        },
+    });
+    assert.match(JSON.stringify(result), /success/);
+    const tools = (await client.listTools()).tools;
+    assert.equal(tools.find((t) => t.name === "prepare_design_plan")?.annotations?.readOnlyHint, true);
+    assert.equal(tools.find((t) => t.name === "execute_design_plan")?.annotations?.readOnlyHint, false);
+    const foreign = await client.callTool({
+        name: "execute_design_plan",
+        arguments: {
+            sessionId: "bob-tab",
+            input: { ...input, planId },
+        },
+    });
+    assert.match(JSON.stringify(foreign), /not connected/);
 });

@@ -122,11 +122,7 @@ function sendTaskResponse(response: any): void {
         let responseString = JSON.stringify(response);
         if (isIntegratedRemoteMcp && responseString.length > MAX_TASK_RESPONSE_SIZE_REMOTE_MCP) {
             const errorMessage = `Serialised response size (${responseString.length}) exceeds maximum of ${MAX_TASK_RESPONSE_SIZE_REMOTE_MCP}.`;
-            console.warn(
-                errorMessage +
-                    " [integrated remote MCP mode restriction]; sending error response instead; original response:",
-                response
-            );
+            console.warn(errorMessage + " [integrated remote MCP mode restriction]", { id: response.id });
             response = {
                 id: response.id,
                 success: false,
@@ -135,7 +131,7 @@ function sendTaskResponse(response: any): void {
             responseString = JSON.stringify(response);
         }
         ws.send(responseString);
-        console.log("Sent response to MCP server:", response);
+        console.log("Sent response to MCP server:", { id: response.id, success: response.success });
     } else {
         console.error("WebSocket not connected, cannot send response");
     }
@@ -241,8 +237,8 @@ function connectToMcpServer(baseUrl?: string, token?: string): void {
         ws.onmessage = (event) => {
             if (ws !== socket) return;
             try {
-                console.log("Received from MCP server:", event.data);
                 const request = JSON.parse(event.data);
+                console.log("Received from MCP server:", { id: request.id, type: request.type, task: request.task });
                 if (request.type === "initialized") {
                     if (ws !== socket) return;
                     connectionReady = true;

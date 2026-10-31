@@ -20,6 +20,8 @@ test("binds backend identity and file permission to the login Cookie, never brow
             } else {
                 res.end("{}");
             }
+        } else if (req.url?.includes("get-file")) {
+            res.end(JSON.stringify({ permissions: { canEdit: req.headers.cookie === "auth=alice" } }));
         } else {
             res.end(
                 JSON.stringify([
@@ -40,6 +42,8 @@ test("binds backend identity and file permission to the login Cookie, never brow
             profileId: "11111111-1111-4111-8111-111111111111",
             token: "alice-secret",
         });
+        assert.equal((await sessions.authorize("auth=alice", "alice-file", signal, true)).token, "alice-secret");
+        await assert.rejects(sessions.authorize("auth=expired", "alice-file", signal, true), /编辑权限/);
         await assert.rejects(sessions.authorize("auth=alice", "bob-file", signal), /无权/);
         await assert.rejects(sessions.authorize("auth=expired", "alice-file", signal), /有效/);
         await assert.rejects(sessions.authenticate("auth=bob", signal));
@@ -56,11 +60,13 @@ test("binds backend identity and file permission to the login Cookie, never brow
         try {
             const config = await fetch(agentUrl + "/api/agent/config", { headers: { Cookie: "auth=alice" } });
             assert.deepEqual(await config.json(), { models: [] });
-            const rejected = await fetch(agentUrl + "/api/agent/chat", {
-                method: "POST",
-                headers: { Origin: "https://evil.example", Cookie: "auth=alice" },
-            });
-            assert.equal(rejected.status, 403);
+            for (const path of ["chat", "confirm", "cancel"]) {
+                const rejected = await fetch(agentUrl + "/api/agent/" + path, {
+                    method: "POST",
+                    headers: { Origin: "https://evil.example", Cookie: "auth=alice" },
+                });
+                assert.equal(rejected.status, 403);
+            }
             const anonymous = await fetch(agentUrl + "/api/agent/config");
             assert.equal(anonymous.status, 400);
             assert.doesNotMatch(await anonymous.text(), /alice-secret|auth=alice/);

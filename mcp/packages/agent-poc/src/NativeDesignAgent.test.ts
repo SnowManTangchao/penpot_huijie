@@ -149,3 +149,63 @@ test("rejects browser supplied user identity, code and unbounded history", () =>
         false
     );
 });
+
+test("model write tools generate a preview only, without exposing confirmation or execution", async () => {
+    const llm = model("计划已生成，请确认。");
+    const original = llm.doStream;
+    let call = 0;
+    llm.doStream = async (options) => {
+        call++;
+        if (call !== 2) {
+            return original(options);
+        }
+        return {
+            stream: new ReadableStream({
+                start(controller) {
+                    controller.enqueue({
+                        type: "tool-call",
+                        toolCallId: "fill",
+                        toolName: "set_fill",
+                        input: JSON.stringify({ shapeId, color: "#0000FF", opacity: 1 }),
+                    });
+                    controller.enqueue({
+                        type: "finish",
+                        finishReason: { unified: "tool-calls", raw: "tool_calls" },
+                        usage: {
+                            inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+                            outputTokens: { total: 10, text: 10, reasoning: 0 },
+                        },
+                    });
+                    controller.close();
+                },
+            }),
+        };
+    };
+    let saved: unknown;
+    const plan = {
+        id: fileId,
+        expiresAt: Date.now() + 300000,
+        outsideSelection: false,
+        targets: [],
+        operations: [{ tool: "set_fill" as const, shapeId, color: "#0000FF", opacity: 1 }],
+    };
+    const events: AgentEvent[] = [];
+    for await (const event of new NativeDesignAgent(llm, { read: async () => context }, async (operations) => {
+        saved = operations;
+        return plan;
+    }).answer(
+        { ...request, messages: [{ role: "user", content: "把选中的矩形改成蓝色" }] },
+        AbortSignal.timeout(5000)
+    )) {
+        events.push(event);
+    }
+    assert.deepEqual(saved, plan.operations);
+    assert.ok(events.some((event) => event.type === "plan"));
+    const tools = llm.doStreamCalls[0].tools?.map((tool) => tool.name) ?? [];
+    assert.ok(tools.includes("create_frame") && tools.includes("set_fill"));
+    assert.ok(tools.includes("set_corner_radius"));
+    assert.equal(
+        tools.some((name) => /execute|confirm|code/.test(name)),
+        false
+    );
+});

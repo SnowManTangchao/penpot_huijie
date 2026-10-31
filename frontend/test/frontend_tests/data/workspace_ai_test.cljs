@@ -1,7 +1,18 @@
 (ns frontend-tests.data.workspace-ai-test
   (:require
+   [app.common.test-helpers.files :as cthf]
+   [app.common.uuid :as uuid]
    [app.main.data.workspace.ai :as ai]
-   [cljs.test :refer [deftest is]]))
+   [app.main.data.workspace.undo :as dwu]
+   [app.main.store :as st]
+   [app.plugins.api :as api]
+   [cljs.test :refer [deftest is]]
+   [clojure.string :as str]
+   [frontend-tests.helpers.async :as async]
+   [frontend-tests.helpers.mock :as mock]
+   [frontend-tests.helpers.state :as ths]
+   [frontend-tests.tokens.helpers.state :as tohs]
+   [potok.v2.core :as ptk]))
 
 (deftest handles-split-network-events
   (let [first-part (ai/parse-chunk "" "{\"type\":\"del")
@@ -9,6 +20,55 @@
     (is (empty? (:events first-part)))
     (is (= [{:type "delta" :text "你好"} {:type "done"}] (:events next-part)))
     (is (= "" (:pending next-part)))))
+
+(deftest ^:async controlled-design-api-writes-enter-native-undo-and-redo
+  (let [file  (cthf/sample-file :ai-undo)
+        store (ths/setup-store file {:renderer :svg})
+        path  [:files (:id file) :data :pages-index (cthf/current-page-id file) :objects]]
+    (await
+     (mock/with-mocks* {st/state store st/stream (ptk/input-stream store)}
+       (st/emit! (tohs/watch-undo-stack))
+       (let [^js context (api/create-context (str uuid/zero))
+             ^js history (.-history context)
+             block       (.undoBlockBegin history)
+             ^js shape   (.createRectangle context)
+             id          (uuid/uuid (.-id shape))]
+         (await (async/wait-for #(get-in @store (conj path id)) "created real rectangle"))
+         (set! (.-fills shape) #js [#js {:fillColor "#0000FF" :fillOpacity 0.5}])
+         (set! (.-borderRadius shape) 16)
+         (.resize shape 120 60)
+         (await (async/wait-for #(= 120 (get-in @store (conj path id :width))) "resized real rectangle"))
+         (.undoBlockFinish history block)
+         (await (async/wait-for #(seq (get-in @store [:workspace-undo :items])) "native undo entry"))
+         (is (= 1 (count (get-in @store [:workspace-undo :items]))))
+         (is (= "#0000ff" (str/lower-case (get-in @store (conj path id :fills 0 :fill-color)))))
+         (st/emit! dwu/undo)
+         (await (async/wait-for #(nil? (get-in @store (conj path id))) "undo created rectangle"))
+         (is (nil? (get-in @store (conj path id))))
+         (st/emit! dwu/redo)
+         (await (async/wait-for #(get-in @store (conj path id)) "redo created rectangle"))
+         (is (= [120 60 0.5]
+                ((juxt :width :height #(get-in % [:fills 0 :fill-opacity])) (get-in @store (conj path id)))))
+         (is (= [16 16 16 16] ((juxt :r1 :r2 :r3 :r4) (get-in @store (conj path id))))))))))
+
+(deftest previews-rectangle-radius-including-zero-and-independent-corners
+  (is (= "四角统一圆角：0" (ai/get-operation-summary {:borderRadius 0})))
+  (is (= "圆角（左上/右上/右下/左下）：1 / 2 / 3 / 4"
+         (ai/get-operation-summary {:cornerRadii [1 2 3 4]}))))
+
+(deftest shows-plan-until-confirmation-and-keeps-verified-step-results
+  (let [plan   {:id "plan" :operations [{:tool "set_fill"}]}
+        ready  (-> (assoc ai/initial-state :busy true)
+                   (ai/apply-event {:type "plan" :plan plan})
+                   (ai/apply-event {:type "done" :answer "请确认" :citedShapeIds []}))
+        result {:status "partial" :steps [{:status "success"} {:status "failed"}]}
+        done   (ai/apply-event ready {:type "execution" :result result})]
+    (is (= plan (:plan ready)))
+    (is (false? (:busy ready)))
+    (is (nil? (:execution ready)))
+    (is (nil? (:plan done)))
+    (is (= result (:execution done)))
+    (is (nil? (:plan (ai/apply-event ready {:type "error" :message "计划失效"}))))))
 
 (deftest rejects-provisional-answer-after-stream-error
   (let [state (-> (assoc ai/initial-state :busy true)

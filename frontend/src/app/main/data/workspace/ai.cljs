@@ -4,7 +4,8 @@
    [promesa.core :as p]))
 
 (def initial-state
-  {:messages [] :draft "" :answer "" :tools {} :context nil :citations [] :busy false :error nil})
+  {:messages [] :draft "" :answer "" :tools {} :context nil :citations [] :busy false :error nil
+   :plan nil :plan-scope nil :execution nil :executing false})
 
 (defn get-connection-state
   [feature-enabled {:keys [enabled token-valid connection-status session-id]}]
@@ -31,17 +32,58 @@
                 "当前编辑器尚未连接。连接后即可发送设计问题。")}))
 
 (defn apply-event
-  [state {:keys [type context name status text answer citedShapeIds message]}]
+  [state {:keys [type context name status text answer citedShapeIds message plan result]}]
   (case type
     "context" (assoc state :context context)
     "tool" (assoc-in state [:tools name] status)
     "delta" (update state :answer str text)
+    "plan" (assoc state :plan plan :execution nil)
+    "execution" (assoc state :execution result :plan nil :busy false :executing false)
     "done" (-> state
                (assoc :answer "" :citations citedShapeIds :busy false)
                (update :messages conj {:role "assistant" :content answer
                                        :citations citedShapeIds :context (:context state)}))
-    "error" (assoc state :answer "" :busy false :error message)
+    "error" (assoc state :answer "" :busy false :error message :plan nil :executing false)
     state))
+
+(def tool-labels
+  {"create_rectangle" "创建矩形" "create_text" "创建文本" "create_frame" "创建画板"
+   "set_text" "修改文本" "set_fill" "替换为单个纯色填充" "set_bounds" "修改位置和尺寸"
+   "set_corner_radius" "设置矩形圆角"})
+
+(defn get-operation-summary
+  [operation]
+  (str/join " · "
+            (cond-> []
+              (contains? operation :borderRadius) (conj (str "四角统一圆角：" (:borderRadius operation)))
+              (:cornerRadii operation) (conj (str "圆角（左上/右上/右下/左下）：" (str/join " / " (:cornerRadii operation))))
+              (contains? operation :text) (conj (str "文本：" (:text operation)))
+              (:color operation) (conj (str "填充：" (:color operation) "，不透明度 " (:opacity operation)))
+              (:width operation) (conj (str "位置 (" (:x operation) ", " (:y operation) ")，尺寸 "
+                                            (:width operation) " × " (:height operation)))
+              (:fontFamily operation) (conj (str "字体：" (:fontFamily operation) " / " (:fontSize operation))))))
+
+(defn get-fill-summary
+  [fills]
+  (if (seq fills)
+    (str/join "；" (map #(str (cond
+                               (:fillColorGradient %) "渐变填充"
+                               (:fillImage %) "图片填充"
+                               :else (or (:fillColor %) "未指定颜色"))
+                             "，不透明度 " (or (:fillOpacity %) 1)) fills))
+    "无填充"))
+
+(defn decide-plan
+  [action scope plan-id controller]
+  (p/let [response (js/fetch (str "/api/agent/" action)
+                             #js {:method "POST" :credentials "same-origin"
+                                  :headers #js {"Content-Type" "application/json"}
+                                  :signal (.-signal controller)
+                                  :body (js/JSON.stringify (clj->js (assoc scope :planId plan-id)))})
+          body (.json response)]
+    (if (.-ok response)
+      (js->clj body :keywordize-keys true)
+      (throw (js/Error. (or (.-message body) "操作请求失败。请检查画布，服务不会自动重试。"))))))
 
 (defn parse-chunk
   "保留跨网络分块的半行，完整事件逐行解码。"

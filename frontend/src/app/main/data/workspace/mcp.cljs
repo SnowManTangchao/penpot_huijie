@@ -10,6 +10,7 @@
    [app.common.logging :as log]
    [app.common.time :as ct]
    [app.common.uri :as u]
+   [app.common.uuid :as uuid]
    [app.config :as cf]
    [app.main.broadcast :as mbc]
    [app.main.data.auth :as-alias auth]
@@ -142,6 +143,8 @@
     ptk/EffectEvent
     (effect [_ _ stream]
       (let [manifest  (-> default-manifest
+                          ;; 每次初始化获取内置插件的新代码，避免沿用升级前的浏览器缓存。
+                          (assoc :code (str "plugin.js?runtime=" (uuid/next)))
                           (assoc :url (str (u/join cf/public-uri "plugins/mcp/manifest.json")))
                           (assoc :host (str (u/join cf/public-uri "plugins/mcp/"))))
 

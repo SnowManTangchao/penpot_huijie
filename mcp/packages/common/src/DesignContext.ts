@@ -21,6 +21,7 @@ export const designShapeSchema = z.object({
     textTruncated: z.boolean().optional(),
     fontFamily: label.optional(),
     fontSize: label.optional(),
+    cornerRadii: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
     fills: z.array(z.object({ color: label.optional(), opacity: z.number().optional() })).max(3),
     childrenTruncated: z.boolean(),
 });

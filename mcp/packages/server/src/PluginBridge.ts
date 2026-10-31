@@ -135,7 +135,7 @@ export class PluginBridge implements TaskDispatchHost {
             }, INITIALIZATION_TIMEOUT_MS);
             let initializing = false;
             ws.on("message", (data: Buffer) => {
-                this.logger.debug("Received WebSocket message: %s", data.toString());
+                this.logger.debug("Received WebSocket message: %d bytes", data.length);
                 try {
                     const message = JSON.parse(data.toString());
                     const connection = this.connectionsBySocket.get(ws);

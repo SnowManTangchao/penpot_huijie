@@ -96,6 +96,16 @@ export class DesignContextReader {
             width: shape.width,
             height: shape.height,
             hidden: shape.hidden,
+            ...(shape.type === "rectangle"
+                ? {
+                      cornerRadii: [
+                          shape.borderRadiusTopLeft ?? 0,
+                          shape.borderRadiusTopRight ?? 0,
+                          shape.borderRadiusBottomRight ?? 0,
+                          shape.borderRadiusBottomLeft ?? 0,
+                      ] as [number, number, number, number],
+                  }
+                : {}),
             ...(shape.type === "text"
                 ? {
                       text: text!.slice(0, 500),

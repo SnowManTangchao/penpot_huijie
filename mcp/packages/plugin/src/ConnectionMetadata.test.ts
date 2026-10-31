@@ -173,7 +173,11 @@ test("plugin reads the current file for each connection metadata request", () =>
             on() {},
         },
         mcp: undefined,
-        require: () => ({ ExecuteCodeTaskHandler: class {}, DesignContextTaskHandler: class {} }),
+        require: () => ({
+            ExecuteCodeTaskHandler: class {},
+            DesignContextTaskHandler: class {},
+            DesignEditTaskHandler: class {},
+        }),
     });
     onMessage({ type: "connection-metadata-request", sessionId: "first" });
     penpot.currentFile = { id: "file-2", name: "Second design" };
@@ -212,7 +216,11 @@ test("plugin without penpotMgmt derives metadata from the open file", () => {
         exports: {},
         penpot,
         mcp: undefined,
-        require: () => ({ ExecuteCodeTaskHandler: class {}, DesignContextTaskHandler: class {} }),
+        require: () => ({
+            ExecuteCodeTaskHandler: class {},
+            DesignContextTaskHandler: class {},
+            DesignEditTaskHandler: class {},
+        }),
     });
     onMessage({ type: "connection-metadata-request", sessionId: "first" });
     penpot.currentFile = null;
@@ -302,7 +310,11 @@ test("integrated plugin stays idle until explicitly connected, including while t
             setMcpStatus: (status: string) => statuses.push(status),
             on: (event: string, callback: () => void) => events.set(event, callback),
         },
-        require: () => ({ ExecuteCodeTaskHandler: class {}, DesignContextTaskHandler: class {} }),
+        require: () => ({
+            ExecuteCodeTaskHandler: class {},
+            DesignContextTaskHandler: class {},
+            DesignEditTaskHandler: class {},
+        }),
     });
     assert.ok(!statuses.includes("connecting"));
     events.get("connect")!();

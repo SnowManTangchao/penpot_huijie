@@ -58,7 +58,10 @@ export class Task<TParams = any> {
             }
             return;
         }
-        console.log("Sent task response:", response);
+        console.log(
+            "Sent task response:",
+            ["designEdit", "getDesignContext"].includes(this.taskType) ? { id: this.requestId, success } : response
+        );
         this.isResponseSent = true;
     }
 

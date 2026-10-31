@@ -3,6 +3,18 @@ import test from "node:test";
 import type { Penpot, Shape } from "@penpot/plugin-types";
 import { DesignContextReader } from "./DesignContextReader.ts";
 
+test("rectangle context preserves all four independent corner radii", () => {
+    const rectangle = {
+        ...shape("rectangle"),
+        type: "rectangle",
+        borderRadiusTopLeft: 1,
+        borderRadiusTopRight: 2,
+        borderRadiusBottomRight: 3,
+        borderRadiusBottomLeft: 4,
+    } as unknown as Shape;
+    assert.deepEqual(fixture([rectangle], [rectangle]).read(scope).shapes[0].cornerRadii, [1, 2, 3, 4]);
+});
+
 const scope = {
     fileId: "11111111-1111-4111-8111-111111111111",
     pageId: "22222222-2222-4222-8222-222222222222",

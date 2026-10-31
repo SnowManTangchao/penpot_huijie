@@ -1,5 +1,6 @@
 import { ExecuteCodeTaskHandler } from "./task-handlers/ExecuteCodeTaskHandler";
 import { DesignContextTaskHandler } from "./task-handlers/DesignContextTaskHandler";
+import { DesignEditTaskHandler } from "./task-handlers/DesignEditTaskHandler";
 import { Task, TaskHandler } from "./TaskHandler";
 import { formatTaskError } from "./ErrorUtils";
 import type { PluginConnectionInit } from "../../common/src";
@@ -33,7 +34,11 @@ let uiInitialized = false;
 /**
  * Registry of all available task handlers.
  */
-const taskHandlers: TaskHandler[] = [new ExecuteCodeTaskHandler(), new DesignContextTaskHandler()];
+const taskHandlers: TaskHandler[] = [
+    new ExecuteCodeTaskHandler(),
+    new DesignContextTaskHandler(),
+    new DesignEditTaskHandler(),
+];
 
 // Open the plugin UI (main.ts)
 penpot.ui.open("Penpot MCP Plugin", `?theme=${penpot.theme}`, {

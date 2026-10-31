@@ -87,6 +87,36 @@
   background-color: var(--color-background-secondary);
 }
 
+.plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-m);
+  margin-block: var(--sp-m);
+  padding: var(--sp-m);
+  border: $b-1 solid var(--color-background-quaternary);
+  border-radius: $br-8;
+  background-color: var(--color-background-secondary);
+}
+
+.plan-list {
+  margin: 0;
+  padding-inline-start: var(--sp-l);
+}
+
+.plan-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-xs);
+  padding-block: var(--sp-s);
+  overflow-wrap: anywhere;
+}
+
+.warning {
+  margin: 0;
+  color: var(--color-foreground-primary);
+  font-weight: 700;
+}
+
 .conversation {
   flex: 1;
   min-block-size: 0;

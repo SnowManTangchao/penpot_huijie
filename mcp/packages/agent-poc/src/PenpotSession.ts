@@ -1,3 +1,4 @@
+import { AgentError } from "./AgentError";
 import { z } from "zod";
 
 /** 使用登录 Cookie 核对身份、文件权限和 MCP 凭据，不信任浏览器提供的用户身份。 */
@@ -16,29 +17,37 @@ export class PenpotSession {
             signal,
         });
         if (!response.ok) {
-            throw new Error("登录已失效或无权读取文件，请检查登录与文件权限。");
+            throw new AgentError("登录已失效或无权读取文件，请检查登录与文件权限。");
         }
         return response.json();
     }
 
     async authenticate(cookie: string | undefined, signal: AbortSignal) {
         if (!cookie) {
-            throw new Error("请先登录 Penpot。");
+            throw new AgentError("请先登录 Penpot。");
         }
         const profile = z
             .object({ id: z.string().uuid(), props: z.record(z.string(), z.unknown()).optional() })
             .parse(await this.get("get-profile", cookie, signal));
         if (profile.id === "00000000-0000-0000-0000-000000000000") {
-            throw new Error("请先登录 Penpot。");
+            throw new AgentError("请先登录 Penpot。");
         }
         return profile;
     }
 
-    async authorize(cookie: string, fileId: string, signal: AbortSignal) {
+    async authorize(cookie: string, fileId: string, signal: AbortSignal, write = false) {
         const profile = await this.authenticate(cookie, signal);
         await this.get("get-file-summary", cookie, signal, { id: fileId });
+        if (write) {
+            const file = z
+                .object({ permissions: z.object({ canEdit: z.literal(true) }) })
+                .safeParse(await this.get("get-file", cookie, signal, { id: fileId }));
+            if (!file.success) {
+                throw new AgentError("当前账号没有文件编辑权限。");
+            }
+        }
         if (profile.props?.mcpEnabled !== true) {
-            throw new Error("请在 Penpot 中启用 MCP 并连接当前编辑器。");
+            throw new AgentError("请在 Penpot 中启用 MCP 并连接当前编辑器。");
         }
         const tokens = z
             .array(
@@ -53,7 +62,7 @@ export class PenpotSession {
             (item) => item.type === "mcp" && item.token && (!item.expiresAt || Date.parse(item.expiresAt) > Date.now())
         )?.token;
         if (!token) {
-            throw new Error("没有有效的 MCP 令牌，请在 Penpot 中重新启用 MCP。");
+            throw new AgentError("没有有效的 MCP 令牌，请在 Penpot 中重新启用 MCP。");
         }
         return { profileId: profile.id, token };
     }
