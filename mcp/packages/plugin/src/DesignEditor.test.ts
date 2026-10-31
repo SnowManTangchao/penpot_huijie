@@ -47,6 +47,9 @@ function fixture() {
                 this.width = w;
                 this.height = h;
             },
+            appendChild(child) {
+                child.parent = this;
+            },
         };
         shapes.set(shape.id, shape);
         return shape;
@@ -104,6 +107,165 @@ function fixture() {
         },
     };
 }
+
+test("creates nested editable content in bounded batches and verifies parent links", async () => {
+    const f = fixture();
+    const base = { name: "区域", x: 10, y: 20, width: 100, height: 50, color: "#ffffff", opacity: 1 };
+    const plan = f.prepare([
+        { ...base, tool: "create_frame", ref: "root" },
+        ...Array.from({ length: 24 }, (_, i) => ({
+            ...base,
+            tool: "create_rectangle",
+            ref: `item${i}`,
+            parentRef: "root",
+        })),
+    ]);
+    assert.equal(f.shapes.size, 1);
+    const first = await f.editor.execute({ ...f.scope, planId: plan.id, batchIndex: 0 });
+    assert.equal(first.hasMore, true);
+    assert.equal(first.steps.length, 10);
+    await f.editor.execute({ ...f.scope, planId: plan.id, batchIndex: 1 });
+    const result = await f.editor.execute({ ...f.scope, planId: plan.id, batchIndex: 2 });
+    assert.equal(result.status, "success");
+    assert.equal(result.batches.length, 3);
+    const rootId = result.steps[0].shapeId;
+    assert.ok(result.steps.slice(1).every((s) => s.after.parentId === rootId));
+    assert.equal(result.steps.length, 25);
+});
+
+test("rejects forward, duplicate and non-container parent references without creating objects", () => {
+    const f = fixture();
+    const base = { name: "区域", x: 0, y: 0, width: 100, height: 50, color: "#ffffff", opacity: 1 };
+    for (const operations of [
+        [{ ...base, tool: "create_rectangle", parentRef: "missing" }],
+        [
+            { ...base, tool: "create_frame", ref: "a" },
+            { ...base, tool: "create_frame", ref: "a" },
+        ],
+        [
+            { ...base, tool: "create_rectangle", ref: "a" },
+            { ...base, tool: "create_rectangle", parentRef: "a" },
+        ],
+    ]) {
+        assert.throws(() => f.prepare(operations), /引用/);
+    }
+    assert.equal(f.shapes.size, 1);
+});
+
+test("between batches rejects replay, stale created objects and changed page before creating more", async () => {
+    const f = fixture();
+    const plan = f.prepare(
+        Array.from({ length: 21 }, (_, i) => ({
+            tool: "create_frame",
+            name: `区域${i}`,
+            ref: `node${i}`,
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 50,
+            color: "#ffffff",
+            opacity: 1,
+        }))
+    );
+    const first = await f.editor.execute({ ...f.scope, planId: plan.id, batchIndex: 0 });
+    await assert.rejects(f.editor.execute({ ...f.scope, planId: plan.id, batchIndex: 0 }), /批次顺序/);
+    assert.equal(f.shapes.size, 11);
+    f.shapes.get(first.steps[0].shapeId).x = 999;
+    await assert.rejects(f.editor.execute({ ...f.scope, planId: plan.id, batchIndex: 1 }), /对象已修改/);
+    assert.equal(f.shapes.size, 11);
+});
+
+test("reuses actual local color and typography assets and rejects stale asset previews", async () => {
+    const f = fixture();
+    const color = {
+        id: "brand",
+        color: "#112233",
+        opacity: 0.8,
+        asFill: () => ({ fillColor: "#112233", fillOpacity: 0.8, fillColorRefId: "brand" }),
+    };
+    const typography = {
+        id: "body",
+        fontFamily: "Inter",
+        fontSize: "18",
+        applyToText: (s) => {
+            s.fontFamily = "Inter";
+            s.fontSize = "18";
+            s.typographyRefId = "body";
+        },
+    };
+    f.api.library = { local: { colors: [color], typographies: [typography], components: [] } };
+    const op = {
+        tool: "create_text",
+        name: "标题",
+        text: "设备",
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 40,
+        color: "#112233",
+        opacity: 0.8,
+        colorRef: "brand",
+        typographyRef: "body",
+        fontFamily: "Inter",
+        fontSize: 18,
+    };
+    const plan = f.prepare([op]);
+    const result = await f.editor.execute({ ...f.scope, planId: plan.id });
+    assert.equal(result.status, "success");
+    assert.equal(result.steps[0].after.fills[0].fillColorRefId, "brand");
+    assert.equal(f.shapes.get(result.steps[0].shapeId).typographyRefId, "body");
+    const stale = f.prepare([op]);
+    color.color = "#000000";
+    const failed = await f.editor.execute({ ...f.scope, planId: stale.id });
+    assert.equal(failed.status, "failed");
+    assert.equal(f.shapes.size, 2);
+});
+
+test("final readback catches earlier geometry changed by later layout updates", async () => {
+    const f = fixture();
+    const plan = f.prepare(
+        [0, 1].map((i) => ({
+            tool: "create_frame",
+            name: `区域${i}`,
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 50,
+            color: "#ffffff",
+            opacity: 1,
+        }))
+    );
+    let firstId;
+    f.api.waitForLayoutUpdate = async () => {
+        if (!firstId) {
+            firstId = [...f.shapes.keys()].at(-1);
+        } else {
+            f.shapes.get(firstId).x = 999;
+        }
+    };
+    const result = await f.editor.execute({ ...f.scope, planId: plan.id });
+    assert.equal(result.status, "partial");
+    assert.equal(result.steps[0].status, "failed");
+    assert.match(result.steps[0].message, /最终回读/);
+});
+
+test("cancellation during generation stops at an operation boundary and records created object IDs", async () => {
+    const f = fixture();
+    const base = { name: "区域", x: 0, y: 0, width: 100, height: 50, color: "#ffffff", opacity: 1 };
+    const plan = f.prepare(Array.from({ length: 21 }, (_, i) => ({ ...base, tool: "create_frame", ref: `node${i}` })));
+    let reads = 0;
+    f.api.waitForLayoutUpdate = async () => {
+        if (++reads === 2) {
+            f.editor.cancel(plan.id);
+        }
+    };
+    const result = await f.editor.execute({ ...f.scope, planId: plan.id });
+    assert.equal(result.cancelled, true);
+    assert.equal(result.status, "partial");
+    assert.equal(result.steps.filter((s) => s.status === "success").length, 2);
+    assert.ok(result.steps.slice(2).every((s) => s.status === "skipped"));
+    assert.equal(f.shapes.size, 3);
+});
 
 test("preview and cancellation have no canvas effects; confirmation reads back and deduplicates", async () => {
     const f = fixture();

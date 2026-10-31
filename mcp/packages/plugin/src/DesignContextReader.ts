@@ -58,6 +58,10 @@ export class DesignContextReader {
                 visit(child, depth + 1);
             }
         };
+        // 优先展开选中的区域，便于在大页面中定向迭代新生成的内容。
+        for (const id of selectedIds) {
+            visit(page.getShapeById(id)!, 0);
+        }
         const roots = "children" in page.root ? page.root.children : [];
         for (const root of roots) {
             if (shapes.size >= 120 && !shapes.has(root.id)) {
@@ -80,8 +84,33 @@ export class DesignContextReader {
             selectionCount: selection.length,
             shapes: [...shapes.values()],
             truncated,
+            designSystem: this.readDesignSystem(),
         };
         return result;
+    }
+
+    private readDesignSystem(): NonNullable<DesignContext["designSystem"]> {
+        const library = this.api.library?.local;
+        const colors = (library?.colors ?? []).filter((c) => c.color && /^#[0-9a-fA-F]{6}$/.test(c.color));
+        const typographies = (library?.typographies ?? []).filter(
+            (t) => Number(t.fontSize) >= 1 && Number(t.fontSize) <= 1000
+        );
+        const components = library?.components ?? [];
+        const fonts = this.api.fonts?.all ?? [];
+        return {
+            colors: colors
+                .slice(0, 60)
+                .map((c) => ({ id: c.id, name: c.name.slice(0, 160), color: c.color!, opacity: c.opacity ?? 1 })),
+            typographies: typographies.slice(0, 40).map((t) => ({
+                id: t.id,
+                name: t.name.slice(0, 160),
+                fontFamily: t.fontFamily.slice(0, 160),
+                fontSize: t.fontSize,
+            })),
+            components: components.slice(0, 40).map((c) => ({ id: c.id, name: c.name.slice(0, 160) })),
+            fonts: fonts.slice(0, 60).map((f) => f.name.slice(0, 160)),
+            truncated: colors.length > 60 || typographies.length > 40 || components.length > 40 || fonts.length > 60,
+        };
     }
 
     private snapshot(shape: Shape): DesignShape {

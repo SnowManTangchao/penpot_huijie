@@ -6,6 +6,8 @@ import {
     type DesignContextInput,
     type EditScope,
     type DesignOperation,
+    type GenerationSummary,
+    type DesignExecution,
 } from "@penpot/mcp-common";
 import type { DesignContextSource } from "./DesignQuestionAgent";
 import { AgentError } from "./AgentError";
@@ -96,12 +98,41 @@ export class McpDesignContextSource implements DesignContextSource {
         }
     }
 
-    async prepare(scope: EditScope, operations: DesignOperation[]) {
-        return designPlanSchema.parse(await this.edit("prepare_design_plan", { ...scope, operations }));
+    async prepare(scope: EditScope, operations: DesignOperation[], generation?: GenerationSummary) {
+        return designPlanSchema.parse(
+            await this.edit("prepare_design_plan", { ...scope, operations, ...(generation ? { generation } : {}) })
+        );
     }
 
     async execute(scope: EditScope, planId: string) {
-        return designExecutionSchema.parse(await this.edit("execute_design_plan", { ...scope, planId }));
+        // 每次 MCP 调用最多执行十步；只推进已回读成功的批次，不重试结果未知的请求。
+        let last: DesignExecution | undefined;
+        try {
+            for (let batchIndex = 0; batchIndex < 12; batchIndex++) {
+                const result = designExecutionSchema.parse(
+                    await this.edit("execute_design_plan", { ...scope, planId, batchIndex })
+                );
+                if (result.planId !== planId) {
+                    throw new Error("计划回读范围不符。");
+                }
+                last = result;
+                if (!result.hasMore || result.status !== "success") {
+                    return result;
+                }
+            }
+        } catch (error) {
+            if (!last) {
+                throw error;
+            }
+            return {
+                ...last,
+                status: "partial" as const,
+                hasMore: false,
+                message:
+                    "批次执行中断。下方保留已回读成功的对象；中断批次可能另有修改，请检查画布。后续批次未执行，服务不会重试。",
+            };
+        }
+        throw new AgentError("生成批次超出上限，请检查画布；不会自动重试。");
     }
 
     async cancel(scope: EditScope, planId: string) {

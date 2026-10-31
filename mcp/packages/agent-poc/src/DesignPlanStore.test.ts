@@ -82,3 +82,16 @@ test("expired plans cannot be confirmed", async () => {
         /过期/
     );
 });
+
+test("iteration history is bounded and scoped to the authenticated account, editor, file and page", async () => {
+    const store = new DesignPlanStore();
+    for (let i = 0; i < 5; i++) {
+        const item = { ...plan, id: crypto.randomUUID() };
+        store.add("alice", "tab", scope, item);
+        await store.execute("alice", "tab", scope, item.id, async () => ({ ...result, planId: item.id }));
+    }
+    assert.equal(store.getHistory("alice", "tab", scope).length, 3);
+    assert.deepEqual(store.getHistory("bob", "tab", scope), []);
+    assert.deepEqual(store.getHistory("alice", "other-tab", scope), []);
+    assert.deepEqual(store.getHistory("alice", "tab", { ...scope, pageId: scope.fileId }), []);
+});

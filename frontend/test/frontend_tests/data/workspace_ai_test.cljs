@@ -21,6 +21,15 @@
     (is (= [{:type "delta" :text "你好"} {:type "done"}] (:events next-part)))
     (is (= "" (:pending next-part)))))
 
+(deftest selects-only-offered-page-alternatives-before-confirmation
+  (let [plans [{:id "a" :generation {:title "侧栏"}} {:id "b" :generation {:title "顶栏"}}]
+        state (ai/apply-event ai/initial-state {:type "plans" :plans plans})]
+    (is (nil? (:plan state)))
+    (is (= (second plans) (:plan (ai/select-plan state "b"))))
+    (is (= state (ai/select-plan state "invented")))
+    (is (= 3 (ai/get-batch-count {:operations (repeat 21 {})})))
+    (is (empty? (:plans (ai/apply-event state {:type "execution" :result {:cancelled true}}))))))
+
 (deftest ^:async controlled-design-api-writes-enter-native-undo-and-redo
   (let [file  (cthf/sample-file :ai-undo)
         store (ths/setup-store file {:renderer :svg})
@@ -55,6 +64,46 @@
   (is (= "四角统一圆角：0" (ai/get-operation-summary {:borderRadius 0})))
   (is (= "圆角（左上/右上/右下/左下）：1 / 2 / 3 / 4"
          (ai/get-operation-summary {:cornerRadii [1 2 3 4]}))))
+
+(deftest ^:async generated-page-hierarchy-keeps-absolute-positions-and-native-undo
+  (let [file  (cthf/sample-file :ai-layout)
+        store (ths/setup-store file {:renderer :svg})
+        path  [:files (:id file) :data :pages-index (cthf/current-page-id file) :objects]]
+    (await
+     (mock/with-mocks* {st/state store st/stream (ptk/input-stream store)}
+       (st/emit! (tohs/watch-undo-stack))
+       (let [^js context (api/create-context (str uuid/zero))
+             ^js history (.-history context)
+             block       (.undoBlockBegin history)
+             ^js board   (.createBoard context)
+             ^js region  (.createBoard context)
+             ^js title   (.createText context "设备概览")
+             board-id    (uuid/uuid (.-id board))
+             region-id   (uuid/uuid (.-id region))
+             title-id    (uuid/uuid (.-id title))]
+         (await (async/wait-for #(get-in @store (conj path title-id)) "created editable text"))
+         (.appendChild board region)
+         (.appendChild region title)
+         (.resize board 1200 800)
+         (set! (.-x board) 1600)
+         (set! (.-y board) 0)
+         (.resize region 1152 200)
+         (set! (.-x region) 1624)
+         (set! (.-y region) 24)
+         (set! (.-growType title) "fixed")
+         (.resize title 300 48)
+         (set! (.-x title) 1648)
+         (set! (.-y title) 48)
+         (await (async/wait-for #(= 1648 (get-in @store (conj path title-id :x))) "positioned nested title"))
+         (is (= board-id (get-in @store (conj path region-id :parent-id))))
+         (is (= region-id (get-in @store (conj path title-id :parent-id))))
+         (is (= [1648 48 300 48]
+                ((juxt :x :y :width :height) (get-in @store (conj path title-id)))))
+         (.undoBlockFinish history block)
+         (await (async/wait-for #(seq (get-in @store [:workspace-undo :items])) "page undo entry"))
+         (st/emit! dwu/undo)
+         (await (async/wait-for #(nil? (get-in @store (conj path board-id))) "undo whole page batch"))
+         (is (nil? (get-in @store (conj path title-id)))))))))
 
 (deftest shows-plan-until-confirmation-and-keeps-verified-step-results
   (let [plan   {:id "plan" :operations [{:tool "set_fill"}]}

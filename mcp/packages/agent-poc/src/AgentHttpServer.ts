@@ -97,6 +97,7 @@ export class AgentHttpServer {
             const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
             if (confirm || cancel) {
                 const request = executeDesignPlanSchema
+                    .omit({ batchIndex: true })
                     .extend({ sessionId: z.string().min(1).max(128) })
                     .strict()
                     .parse(body);
@@ -164,14 +165,19 @@ export class AgentHttpServer {
                 selectedIds: request.selectedIds,
                 selectionCount: request.selectionCount,
             };
-            for await (const event of new NativeDesignAgent(model, source, async (operations) => {
-                stage = "无法生成计划：请确认文件编辑权限，目标未锁定、隐藏或删除，且页面和选区未改变。";
-                await this.sessions.authorize(req.headers.cookie ?? "", request.fileId, signal, true);
-                signal.throwIfAborted();
-                const plan = await connected.prepare(scope, operations);
-                this.plans.add(session.profileId, request.sessionId, scope, plan);
-                return plan;
-            }).answer(request, signal)) {
+            for await (const event of new NativeDesignAgent(
+                model,
+                source,
+                async (operations, generation) => {
+                    stage = "无法生成计划：请确认文件编辑权限，目标未锁定、隐藏或删除，且页面和选区未改变。";
+                    await this.sessions.authorize(req.headers.cookie ?? "", request.fileId, signal, true);
+                    signal.throwIfAborted();
+                    const plan = await connected.prepare(scope, operations, generation);
+                    this.plans.add(session.profileId, request.sessionId, scope, plan);
+                    return plan;
+                },
+                this.plans.getHistory(session.profileId, request.sessionId, scope)
+            ).answer(request, signal)) {
                 if (event.type === "context") {
                     await this.send(
                         res,

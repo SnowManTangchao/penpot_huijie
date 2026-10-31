@@ -15,6 +15,38 @@ test("rectangle context preserves all four independent corner radii", () => {
     assert.deepEqual(fixture([rectangle], [rectangle]).read(scope).shapes[0].cornerRadii, [1, 2, 3, 4]);
 });
 
+test("reads bounded local design assets without including private component fields", () => {
+    const api = {
+        currentFile: { id: scope.fileId, name: "文件", revn: 1 },
+        currentPage: { id: scope.pageId, name: "页面", root: shape("root"), getShapeById: () => null },
+        selection: [],
+        fonts: { all: [{ name: "Inter" }] },
+        library: {
+            local: {
+                colors: Array.from({ length: 61 }, (_, i) => ({ id: `c${i}`, name: "品牌", color: "#112233" })),
+                typographies: [{ id: "body", name: "正文", fontFamily: "Inter", fontSize: "16" }],
+                components: [{ id: "button", name: "按钮", privateData: "不可传出" }],
+            },
+        },
+    } as unknown as Penpot;
+    const result = new DesignContextReader(api).read(scope).designSystem!;
+    assert.equal(result.colors.length, 60);
+    assert.equal(result.truncated, true);
+    assert.deepEqual(result.components, [{ id: "button", name: "按钮" }]);
+    assert.equal(result.typographies[0].fontSize, "16");
+    assert.deepEqual(result.fonts, ["Inter"]);
+});
+
+test("prioritizes descendants of the selected generated region in a large page", () => {
+    const child = shape("generated-title");
+    const region = shape("generated-page", [child]);
+    const earlier = Array.from({ length: 120 }, (_, i) => shape(`existing-${i}`));
+    const context = fixture([...earlier, region], [region]).read(scope);
+    assert.equal(context.truncated, true);
+    assert.ok(context.shapes.some((s) => s.id === child.id));
+    assert.equal(context.shapes.length, 120);
+});
+
 const scope = {
     fileId: "11111111-1111-4111-8111-111111111111",
     pageId: "22222222-2222-4222-8222-222222222222",

@@ -100,7 +100,119 @@ test("streams tool states and text, injects current context and verifies final r
     assert.match(JSON.stringify(llm.doStreamCalls[0].prompt), /立即购买/);
     assert.deepEqual(
         llm.doStreamCalls[0].tools?.map((tool) => tool.name),
-        ["get_current_file_context", "get_current_page", "get_selected_shapes", "get_shape_tree"]
+        [
+            "request_design_clarification",
+            "get_design_system",
+            "get_current_file_context",
+            "get_current_page",
+            "get_selected_shapes",
+            "get_shape_tree",
+        ]
+    );
+});
+
+function toolModel(name: string, input: unknown) {
+    const llm = model("请核对方案。");
+    const original = llm.doStream;
+    let call = 0;
+    llm.doStream = async (options) => {
+        if (++call !== 2) {
+            return original(options);
+        }
+        return {
+            stream: new ReadableStream({
+                start(controller) {
+                    controller.enqueue({
+                        type: "tool-call",
+                        toolCallId: "proposal",
+                        toolName: name,
+                        input: JSON.stringify(input),
+                    });
+                    controller.enqueue({
+                        type: "finish",
+                        finishReason: { unified: "tool-calls", raw: "tool_calls" },
+                        usage: {
+                            inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+                            outputTokens: { total: 10, text: 10, reasoning: 0 },
+                        },
+                    });
+                    controller.close();
+                },
+            }),
+        };
+    };
+    return llm;
+}
+
+test("whole-page alternatives stay preview-only and carry their validated layout summaries", async () => {
+    const page = {
+        title: "设备仪表盘",
+        pageType: "dashboard",
+        goal: "查看设备",
+        roles: ["操作员"],
+        interactions: [],
+        style: "简洁",
+        assumptions: [],
+        width: 1200,
+        height: 800,
+        nodes: [{ key: "root", type: "container", name: "页面", width: 1200, height: 800 }],
+    };
+    const llm = toolModel("propose_page_layout", {
+        alternatives: [
+            page,
+            {
+                ...page,
+                title: "顶栏仪表盘",
+                nodes: [
+                    ...page.nodes,
+                    { key: "header", parent: "root", type: "shape", name: "顶栏", width: 1200, height: 60 },
+                ],
+            },
+        ],
+    });
+    const prepared: unknown[] = [];
+    const events: AgentEvent[] = [];
+    for await (const event of new NativeDesignAgent(
+        llm,
+        { read: async () => context },
+        async (operations, generation) => {
+            prepared.push(generation);
+            return {
+                id: crypto.randomUUID(),
+                expiresAt: Date.now() + 300000,
+                outsideSelection: true,
+                operations,
+                targets: [],
+                generation,
+            };
+        }
+    ).answer(
+        { ...request, messages: [{ role: "user", content: "生成两个设备仪表盘方案" }] },
+        AbortSignal.timeout(5000)
+    )) {
+        events.push(event);
+    }
+    assert.equal(prepared.length, 2);
+    const event = events.find((e) => e.type === "plans");
+    assert.ok(event?.type === "plans");
+    assert.equal(event.plans.length, 2);
+    assert.equal(event.plans[0].operations[0].tool, "create_frame");
+    assert.equal(event.plans[1].generation?.title, "顶栏仪表盘");
+    assert.equal(events.at(-1)?.type, "done");
+});
+
+test("missing business requirements produce questions without preparing writes or invented citations", async () => {
+    const llm = toolModel("request_design_clarification", { questions: ["页面供哪个角色使用？"] });
+    const events: AgentEvent[] = [];
+    for await (const event of new NativeDesignAgent(llm, { read: async () => context }, async () => {
+        throw Error("不得生成计划");
+    }).answer(request, AbortSignal.timeout(5000))) {
+        events.push(event);
+    }
+    assert.deepEqual(events.at(-1), { type: "done", answer: "1. 页面供哪个角色使用？", citedShapeIds: [] });
+    assert.equal(
+        events.some((e) => e.type === "plan" || e.type === "plans"),
+        false
     );
 });
 

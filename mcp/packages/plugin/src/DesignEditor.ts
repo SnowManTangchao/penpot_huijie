@@ -18,6 +18,11 @@ interface PendingPlan {
     executing?: boolean;
     generation: number;
     listeners: ReturnType<Penpot["on"]>[];
+    cancelled?: boolean;
+    assets: string;
+    expected?: Map<string, EditSnapshot>;
+    refs?: Map<string, string>;
+    nextBatch?: number;
 }
 
 /** 在插件内保存预览，确认时重新核验并执行固定操作；失败不自动重试或回滚。 */
@@ -41,7 +46,11 @@ export class DesignEditor {
 
     cancel(id: string): void {
         const entry = this.plans.get(id);
-        if (entry?.executing || entry?.result) {
+        if (entry?.executing || entry?.result?.hasMore) {
+            entry.cancelled = true;
+            return;
+        }
+        if (entry?.result) {
             throw new Error("计划已开始执行，无法取消。");
         }
         if (entry) {
@@ -133,7 +142,17 @@ export class DesignEditor {
             throw new Error("待确认计划过多，请稍后重试。");
         }
         const targets = new Map<string, EditSnapshot>();
+        const refs = new Map<string, DesignOperation>();
         for (const op of request.operations) {
+            if ("parentRef" in op && op.parentRef && refs.get(op.parentRef)?.tool !== "create_frame") {
+                throw new Error("父节点引用缺失、顺序错误或不是容器。");
+            }
+            if ("ref" in op && op.ref) {
+                if (refs.has(op.ref)) {
+                    throw new Error("节点引用重复。");
+                }
+                refs.set(op.ref, op);
+            }
             if ("shapeId" in op) {
                 const shape = this.getShape(op.shapeId);
                 if (
@@ -155,8 +174,16 @@ export class DesignEditor {
             ),
             operations: request.operations,
             targets: [...targets.values()],
+            ...(request.generation ? { generation: request.generation } : {}),
         };
-        const entry: PendingPlan = { scope, plan, invalid: false, generation: this.generation, listeners: [] };
+        const entry: PendingPlan = {
+            scope,
+            plan,
+            invalid: false,
+            generation: this.generation,
+            listeners: [],
+            assets: this.getAssets(request.operations),
+        };
         entry.listeners = plan.targets.map((target) =>
             this.api.on(
                 "shapechange",
@@ -189,8 +216,11 @@ export class DesignEditor {
         if (entry.executing) {
             throw new Error("计划正在执行，请勿重复确认。");
         }
-        if (entry.result) {
+        if (entry.result && !entry.result.hasMore) {
             return entry.result;
+        }
+        if ((request.batchIndex ?? 0) !== (entry.nextBatch ?? 0)) {
+            throw new Error("批次顺序不符，不会重放已完成操作。");
         }
         if (this.running) {
             throw new Error("已有计划正在执行。");
@@ -198,29 +228,61 @@ export class DesignEditor {
         if (entry.invalid) {
             throw new Error("上下文已改变，计划已失效。");
         }
-        entry.invalid = true;
         this.removeListeners(entry);
         this.assertScope(scope);
-        for (const before of entry.plan.targets) {
+        for (const before of entry.expected?.values() ?? entry.plan.targets) {
             if (JSON.stringify(this.getSnapshot(this.getShape(before.id))) !== JSON.stringify(before)) {
                 throw new Error("目标对象已修改，请重新生成计划。");
             }
         }
-        const result: DesignExecution = { planId: entry.plan.id, status: "failed", steps: [] };
+        const result: DesignExecution = entry.result ?? {
+            planId: entry.plan.id,
+            status: "failed",
+            steps: [],
+            batches: [],
+        };
         entry.result = result;
         entry.executing = true;
         this.running = true;
-        const expected = new Map(entry.plan.targets.map((target) => [target.id, target]));
+        const expected = entry.expected ?? new Map(entry.plan.targets.map((target) => [target.id, target]));
+        const refs = entry.refs ?? new Map<string, string>();
+        entry.expected = expected;
+        entry.refs = refs;
+        const start = result.steps.length;
+        const batchMode = request.batchIndex !== undefined || entry.plan.operations.length > 20;
+        const end = batchMode ? Math.min(start + 10, entry.plan.operations.length) : entry.plan.operations.length;
         const oldFlag = this.api.flags.throwValidationErrors;
         let block: Symbol | undefined;
         let stopped = false;
         const started = Date.now();
         try {
-            block = this.api.history.undoBlockBegin();
             this.api.flags.throwValidationErrors = true;
-            for (const op of entry.plan.operations) {
+            for (const [index, op] of entry.plan.operations.entries()) {
+                if (index < start || (index >= end && !stopped)) {
+                    continue;
+                }
+                if (index % 10 === 0 && !stopped) {
+                    if (block) {
+                        this.api.history.undoBlockFinish(block);
+                        block = undefined;
+                    }
+                    // 每批最多十个对象，并让出事件循环以处理取消与上下文失效。
+                    if (index > 0) {
+                        await new Promise((resolve) => setTimeout(resolve, 0));
+                    }
+                    block = this.api.history.undoBlockBegin();
+                    result.batches!.push({ index: result.batches!.length, shapeIds: [], status: "success" });
+                }
+                if (entry.cancelled) {
+                    stopped = true;
+                    result.cancelled = true;
+                }
                 if (stopped) {
-                    result.steps.push({ tool: op.tool, status: "skipped", message: "前一步失败，已停止。" });
+                    result.steps.push({
+                        tool: op.tool,
+                        status: "skipped",
+                        message: result.cancelled ? "用户已取消，后续步骤未执行。" : "前一步失败，已停止。",
+                    });
                     continue;
                 }
                 let shape: Shape | undefined;
@@ -232,6 +294,9 @@ export class DesignEditor {
                     this.assertScope(scope);
                     if (entry.generation !== this.generation) {
                         throw new Error("上下文已改变");
+                    }
+                    if (this.getAssets(entry.plan.operations) !== entry.assets) {
+                        throw new Error("设计资产已改变");
                     }
                     shape = "shapeId" in op ? this.getShape(op.shapeId) : undefined;
                     before = shape ? this.getSnapshot(shape) : null;
@@ -249,13 +314,26 @@ export class DesignEditor {
                             case "create_text":
                                 shape = this.api.createText(op.text) ?? undefined;
                                 break;
+                            case "create_component":
+                                shape = this.api.library.local.components
+                                    .find((c) => c.id === op.componentId)
+                                    ?.instance();
+                                break;
                         }
                         if (!shape) {
                             throw new Error("创建失败");
                         }
-                        const root = this.api.currentPage!.root;
-                        if ("appendChild" in root) {
-                            root.appendChild(shape);
+                        const parent =
+                            "parentRef" in op && op.parentRef
+                                ? this.getShape(refs.get(op.parentRef)!)
+                                : this.api.currentPage!.root;
+                        if ("appendChild" in parent) {
+                            parent.appendChild(shape);
+                        } else {
+                            throw new Error("父对象不支持子节点");
+                        }
+                        if ("ref" in op && op.ref) {
+                            refs.set(op.ref, shape.id);
                         }
                     }
                     this.apply(shape, op);
@@ -265,11 +343,15 @@ export class DesignEditor {
                         throw new Error("上下文已改变");
                     }
                     const after = this.getSnapshot(this.getShape(shape.id));
-                    if (!this.matches(after, op)) {
+                    if (
+                        !this.matches(after, op) ||
+                        ("parentRef" in op && op.parentRef && after.parentId !== refs.get(op.parentRef))
+                    ) {
                         throw new Error("回读不符");
                     }
                     result.steps.push({ tool: op.tool, status: "success", shapeId: shape.id, before, after });
                     expected.set(shape.id, after);
+                    result.batches![result.batches!.length - 1].shapeIds.push(shape.id);
                 } catch {
                     stopped = true;
                     result.steps.push({
@@ -280,8 +362,38 @@ export class DesignEditor {
                         after: shape && this.api.currentPage?.getShapeById(shape.id) ? this.getSnapshot(shape) : null,
                         message: "执行或回读验证失败，当前步骤可能已产生修改。请检查画布；可使用原生撤销。",
                     });
+                    const batch = result.batches![result.batches!.length - 1];
+                    batch.status = batch.shapeIds.length ? "partial" : "failed";
+                    if (shape) {
+                        batch.shapeIds.push(shape.id);
+                    }
                 }
             }
+            if (!stopped) {
+                // 最终回读防止后续操作或容器布局使早先已验证的对象发生偏移。
+                for (const [index, op] of entry.plan.operations.entries()) {
+                    const step = result.steps[index];
+                    if (!step?.shapeId) {
+                        continue;
+                    }
+                    if (result.steps.slice(index + 1).some((s) => s.shapeId === step.shapeId)) {
+                        continue;
+                    }
+                    const after = this.getSnapshot(this.getShape(step.shapeId));
+                    if (
+                        JSON.stringify(after) !== JSON.stringify(expected.get(step.shapeId)) ||
+                        ("parentRef" in op && op.parentRef && after.parentId !== refs.get(op.parentRef))
+                    ) {
+                        step.status = "failed";
+                        step.message = "最终回读与计划不符，请检查画布并使用撤销恢复。";
+                        stopped = true;
+                    }
+                    step.after = after;
+                }
+            }
+            result.issues = this.checkQuality(result, entry.plan, refs);
+            result.hasMore = !stopped && result.steps.length < entry.plan.operations.length;
+            entry.nextBatch = (entry.nextBatch ?? 0) + 1;
         } finally {
             this.api.flags.throwValidationErrors = oldFlag;
             entry.executing = false;
@@ -290,8 +402,133 @@ export class DesignEditor {
                 this.api.history.undoBlockFinish(block);
             }
         }
+        for (const batch of result.batches ?? []) {
+            const steps = result.steps.slice(batch.index * 10, batch.index * 10 + 10);
+            if (steps.some((s) => s.status !== "success")) {
+                batch.status = steps.some((s) => s.status === "success") ? "partial" : "failed";
+            }
+        }
         result.status = stopped ? (result.steps.some((s) => s.status === "success") ? "partial" : "failed") : "success";
         return result;
+    }
+
+    private getAssets(operations: DesignOperation[]): string {
+        const library = this.api.library?.local;
+        return JSON.stringify(
+            operations.map((op) => {
+                const assets: unknown[] = [];
+                if ("colorRef" in op && op.colorRef) {
+                    const color = library?.colors.find((c) => c.id === op.colorRef);
+                    if (
+                        !color ||
+                        color.color?.toLowerCase() !== op.color.toLowerCase() ||
+                        (color.opacity ?? 1) !== op.opacity
+                    ) {
+                        throw new Error("引用颜色已缺失或改变。");
+                    }
+                    assets.push(color.asFill());
+                }
+                if (op.tool === "create_text" && op.typographyRef) {
+                    const style = library?.typographies.find((t) => t.id === op.typographyRef);
+                    if (!style || style.fontFamily !== op.fontFamily || Number(style.fontSize) !== op.fontSize) {
+                        throw new Error("引用文本样式已缺失或改变。");
+                    }
+                    assets.push([
+                        style.fontId,
+                        style.fontVariantId,
+                        style.fontFamily,
+                        style.fontSize,
+                        style.fontWeight,
+                        style.fontStyle,
+                        style.lineHeight,
+                        style.letterSpacing,
+                        style.textTransform,
+                    ]);
+                }
+                if (op.tool === "create_component") {
+                    const component = library?.components.find((c) => c.id === op.componentId);
+                    if (!component) {
+                        throw new Error("引用组件已缺失。");
+                    }
+                    assets.push(this.getSnapshot(component.mainInstance()));
+                }
+                return assets;
+            })
+        );
+    }
+
+    private checkQuality(
+        result: DesignExecution,
+        plan: DesignPlan,
+        refs: Map<string, string>
+    ): NonNullable<DesignExecution["issues"]> {
+        if (!plan.generation) {
+            return [];
+        }
+        const issues: NonNullable<DesignExecution["issues"]> = [];
+        const created = result.steps.flatMap((s, index) =>
+            s.after ? [{ snapshot: s.after, op: plan.operations[index] }] : []
+        );
+        for (const { snapshot: child, op } of created) {
+            if ("x" in op && (Math.abs(child.x - op.x) > 0.01 || Math.abs(child.y - op.y) > 0.01)) {
+                issues.push({
+                    code: "alignment",
+                    message: `${child.name} 的位置偏离已确认布局。`,
+                    nodeKeys: [],
+                    shapeIds: [child.id],
+                });
+            }
+            if (
+                ("color" in op && String(child.fills[0]?.fillColor).toLowerCase() !== op.color.toLowerCase()) ||
+                (op.tool === "create_text" &&
+                    (child.fontFamily !== op.fontFamily || Number(child.fontSize) !== op.fontSize))
+            ) {
+                issues.push({
+                    code: "style",
+                    message: `${child.name} 的颜色或字体与确认方案不一致。`,
+                    nodeKeys: [],
+                    shapeIds: [child.id],
+                });
+            }
+            if (!("parentRef" in op) || !op.parentRef) {
+                continue;
+            }
+            const parent = created.find((s) => s.snapshot.id === refs.get(op.parentRef!))?.snapshot;
+            if (
+                parent &&
+                (child.x < parent.x - 0.01 ||
+                    child.y < parent.y - 0.01 ||
+                    child.x + child.width > parent.x + parent.width + 0.01 ||
+                    child.y + child.height > parent.y + parent.height + 0.01)
+            ) {
+                issues.push({
+                    code: "overflow",
+                    message: `${child.name} 超出父容器边界。`,
+                    nodeKeys: [],
+                    shapeIds: [child.id, parent.id],
+                });
+            }
+        }
+        for (let i = 0; i < created.length; i++) {
+            const a = created[i].snapshot;
+            for (const { snapshot: b } of created.slice(i + 1)) {
+                if (
+                    a.parentId === b.parentId &&
+                    a.x < b.x + b.width &&
+                    a.x + a.width > b.x &&
+                    a.y < b.y + b.height &&
+                    a.y + a.height > b.y
+                ) {
+                    issues.push({
+                        code: "overlap",
+                        message: `${a.name} 与 ${b.name} 的矩形边界重叠，请核对是否为有意叠放。`,
+                        nodeKeys: [],
+                        shapeIds: [a.id, b.id],
+                    });
+                }
+            }
+        }
+        return issues.slice(0, 120);
     }
 
     private async waitForLayout(): Promise<void> {
@@ -317,12 +554,17 @@ export class DesignEditor {
             shape.y = op.y;
         }
         if ("color" in op) {
-            shape.fills = [{ fillColor: op.color.toUpperCase(), fillOpacity: op.opacity }];
+            shape.fills = op.colorRef
+                ? [this.api.library.local.colors.find((c) => c.id === op.colorRef)!.asFill()]
+                : [{ fillColor: op.color.toUpperCase(), fillOpacity: op.opacity }];
         }
         if (op.tool === "create_text" && shape.type === "text") {
             shape.fontFamily = op.fontFamily;
             shape.fontSize = String(op.fontSize);
             shape.growType = "fixed";
+            if (op.typographyRef) {
+                this.api.library.local.typographies.find((t) => t.id === op.typographyRef)!.applyToText(shape);
+            }
         }
     }
 
@@ -342,6 +584,7 @@ export class DesignEditor {
             (!("color" in op) ||
                 (after.fills.length === 1 &&
                     String(after.fills[0].fillColor).toLowerCase() === op.color.toLowerCase() &&
+                    (!op.colorRef || after.fills[0].fillColorRefId === op.colorRef) &&
                     close(Number(after.fills[0].fillOpacity), op.opacity))) &&
             (!("name" in op) || after.name === op.name) &&
             (op.tool !== "create_text" ||

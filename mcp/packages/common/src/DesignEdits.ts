@@ -1,10 +1,22 @@
 import { z } from "zod";
+import { generationSummarySchema, qualityIssueSchema } from "./LayoutTree.ts";
 
 const coordinate = z.number().min(-100000).max(100000);
 const dimension = z.number().min(0.01).max(100000);
 const bounds = { x: coordinate, y: coordinate, width: dimension, height: dimension };
-const fill = { color: z.string().regex(/^#[0-9a-fA-F]{6}$/), opacity: z.number().min(0).max(1) };
-const creation = { name: z.string().trim().min(1).max(160), ...bounds, ...fill };
+const fill = {
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    opacity: z.number().min(0).max(1),
+    colorRef: z.string().max(160).optional(),
+};
+const reference = z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/);
+const creation = {
+    name: z.string().trim().min(1).max(160),
+    ...bounds,
+    ...fill,
+    ref: reference.optional(),
+    parentRef: reference.optional(),
+};
 const target = { shapeId: z.string().uuid() };
 const radius = z.number().min(0).max(100000);
 
@@ -20,9 +32,20 @@ export const designOperations = {
             text: z.string().min(1).max(4000),
             fontFamily: z.string().trim().min(1).max(160),
             fontSize: z.number().min(1).max(1000),
+            typographyRef: z.string().max(160).optional(),
         })
         .strict(),
     create_frame: z.object({ tool: z.literal("create_frame"), ...creation }).strict(),
+    create_component: z
+        .object({
+            tool: z.literal("create_component"),
+            name: creation.name,
+            ...bounds,
+            ref: reference.optional(),
+            parentRef: reference.optional(),
+            componentId: z.string().min(1).max(160),
+        })
+        .strict(),
     set_text: z.object({ tool: z.literal("set_text"), ...target, text: z.string().max(4000) }).strict(),
     set_fill: z.object({ tool: z.literal("set_fill"), ...target, ...fill }).strict(),
     set_bounds: z.object({ tool: z.literal("set_bounds"), ...target, ...bounds }).strict(),
@@ -32,6 +55,7 @@ export const designOperationSchema = z.discriminatedUnion("tool", [
     designOperations.create_rectangle,
     designOperations.create_text,
     designOperations.create_frame,
+    designOperations.create_component,
     designOperations.set_text,
     designOperations.set_fill,
     designOperations.set_bounds,
@@ -50,9 +74,19 @@ export const editScopeSchema = z
         "选区不完整，请缩小选区后重试。"
     );
 export const prepareDesignPlanSchema = z
-    .object({ ...editScopeSchema.shape, operations: z.array(designOperationSchema).min(1).max(20) })
+    .object({
+        ...editScopeSchema.shape,
+        operations: z.array(designOperationSchema).min(1).max(120),
+        generation: generationSummarySchema.optional(),
+    })
     .strict();
-export const executeDesignPlanSchema = z.object({ ...editScopeSchema.shape, planId: z.string().uuid() }).strict();
+export const executeDesignPlanSchema = z
+    .object({
+        ...editScopeSchema.shape,
+        planId: z.string().uuid(),
+        batchIndex: z.number().int().min(0).max(11).optional(),
+    })
+    .strict();
 
 const snapshotSchema = z.object({
     id: z.string(),
@@ -75,8 +109,9 @@ export const designPlanSchema = z.object({
     id: z.string().uuid(),
     expiresAt: z.number(),
     outsideSelection: z.boolean(),
-    operations: z.array(designOperationSchema).min(1).max(20),
-    targets: z.array(snapshotSchema).max(20),
+    operations: z.array(designOperationSchema).min(1).max(120),
+    targets: z.array(snapshotSchema).max(120),
+    generation: generationSummarySchema.optional(),
 });
 export const designExecutionSchema = z.object({
     planId: z.string().uuid(),
@@ -92,7 +127,21 @@ export const designExecutionSchema = z.object({
                 message: z.string().optional(),
             })
         )
-        .max(20),
+        .max(120),
+    batches: z
+        .array(
+            z.object({
+                index: z.number().int(),
+                shapeIds: z.array(z.string()).max(10),
+                status: z.enum(["success", "partial", "failed"]),
+            })
+        )
+        .max(12)
+        .optional(),
+    issues: z.array(qualityIssueSchema).max(120).optional(),
+    cancelled: z.boolean().optional(),
+    hasMore: z.boolean().optional(),
+    message: z.string().max(500).optional(),
 });
 export type DesignOperation = z.infer<typeof designOperationSchema>;
 export type EditScope = z.infer<typeof editScopeSchema>;

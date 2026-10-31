@@ -5,7 +5,7 @@
 
 (def initial-state
   {:messages [] :draft "" :answer "" :tools {} :context nil :citations [] :busy false :error nil
-   :plan nil :plan-scope nil :execution nil :executing false})
+   :plan nil :plans [] :plan-scope nil :execution nil :executing false :cancelling false})
 
 (defn get-connection-state
   [feature-enabled {:keys [enabled token-valid connection-status session-id]}]
@@ -32,24 +32,35 @@
                 "当前编辑器尚未连接。连接后即可发送设计问题。")}))
 
 (defn apply-event
-  [state {:keys [type context name status text answer citedShapeIds message plan result]}]
+  [state {:keys [type context name status text answer citedShapeIds message plan plans result]}]
   (case type
     "context" (assoc state :context context)
     "tool" (assoc-in state [:tools name] status)
     "delta" (update state :answer str text)
-    "plan" (assoc state :plan plan :execution nil)
-    "execution" (assoc state :execution result :plan nil :busy false :executing false)
+    "plan" (assoc state :plan plan :plans [] :execution nil)
+    "plans" (assoc state :plans plans :plan (when (= 1 (count plans)) (first plans)) :execution nil)
+    "execution" (assoc state :execution result :plan nil :plans [] :busy false :executing false :cancelling false)
     "done" (-> state
                (assoc :answer "" :citations citedShapeIds :busy false)
                (update :messages conj {:role "assistant" :content answer
                                        :citations citedShapeIds :context (:context state)}))
-    "error" (assoc state :answer "" :busy false :error message :plan nil :executing false)
+    "error" (assoc state :answer "" :busy false :error message :plan nil :plans [] :executing false :cancelling false)
     state))
+
+(defn select-plan
+  [state id]
+  (if-let [plan (and (not (:busy state)) (some #(when (= id (:id %)) %) (:plans state)))]
+    (assoc state :plan plan)
+    state))
+
+(defn get-batch-count
+  [plan]
+  (js/Math.ceil (/ (count (:operations plan)) 10)))
 
 (def tool-labels
   {"create_rectangle" "创建矩形" "create_text" "创建文本" "create_frame" "创建画板"
    "set_text" "修改文本" "set_fill" "替换为单个纯色填充" "set_bounds" "修改位置和尺寸"
-   "set_corner_radius" "设置矩形圆角"})
+   "set_corner_radius" "设置矩形圆角" "create_component" "复用组件"})
 
 (defn get-operation-summary
   [operation]

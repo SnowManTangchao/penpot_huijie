@@ -42,10 +42,38 @@ export class DesignPlanStore {
 
     cancel(owner: string, sessionId: string, scope: EditScope, id: string): void {
         const entry = this.get(owner, sessionId, scope, id);
+        if (entry.state === "executing") {
+            return;
+        }
         if (entry.state !== "pending" && entry.state !== "cancelled") {
             throw new AgentError("计划已开始执行，无法取消。");
         }
         entry.state = "cancelled";
+    }
+
+    getHistory(owner: string, sessionId: string, scope: EditScope): unknown[] {
+        return [...this.entries.values()]
+            .filter(
+                (entry) =>
+                    entry.owner === owner &&
+                    entry.sessionId === sessionId &&
+                    entry.scope.fileId === scope.fileId &&
+                    entry.scope.pageId === scope.pageId &&
+                    entry.result
+            )
+            .slice(-3)
+            .map((entry) => ({
+                title: entry.plan.generation?.title,
+                status: entry.result!.status,
+                shapes: entry
+                    .result!.steps.filter((s) => s.after)
+                    .slice(-120)
+                    .map((s) => ({
+                        id: s.shapeId,
+                        name: s.after!.name,
+                        parentId: s.after!.parentId,
+                    })),
+            }));
     }
 
     async execute(

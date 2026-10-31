@@ -7,6 +7,13 @@ export const designContextInputSchema = z.object({
 });
 
 const label = z.string().max(160);
+export const designSystemSchema = z.object({
+    colors: z.array(z.object({ id: label, name: label, color: label, opacity: z.number() })).max(60),
+    typographies: z.array(z.object({ id: label, name: label, fontFamily: label, fontSize: label })).max(40),
+    components: z.array(z.object({ id: label, name: label })).max(40),
+    fonts: z.array(label).max(60),
+    truncated: z.boolean(),
+});
 export const designShapeSchema = z.object({
     id: z.string(),
     name: label,
@@ -33,6 +40,7 @@ export const designContextSchema = z.object({
     selectionCount: z.number().int().nonnegative(),
     shapes: z.array(designShapeSchema).max(120),
     truncated: z.boolean(),
+    designSystem: designSystemSchema.optional(),
 });
 
 export type DesignContextInput = z.infer<typeof designContextInputSchema>;

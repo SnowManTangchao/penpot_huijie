@@ -59,3 +59,82 @@ test("old plugin rejection of the radius tool asks the user to refresh instead o
         await new Promise<void>((resolve) => server.close(() => resolve()));
     }
 });
+
+for (const failSecondBatch of [false, true]) {
+    test(`executes bounded batches and preserves verified objects after transport failure: ${failSecondBatch}`, async () => {
+        const created: string[] = [];
+        const server = createServer(async (req, res) => {
+            if (req.method !== "POST") {
+                res.writeHead(405).end();
+                return;
+            }
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) {
+                chunks.push(chunk);
+            }
+            const request = JSON.parse(Buffer.concat(chunks).toString());
+            if (request.id === undefined) {
+                res.writeHead(202).end();
+                return;
+            }
+            let result: unknown;
+            if (request.method === "initialize") {
+                result = {
+                    protocolVersion: request.params.protocolVersion,
+                    capabilities: { tools: {} },
+                    serverInfo: { name: "batch-bridge", version: "1" },
+                };
+            } else {
+                const index = request.params.arguments.input.batchIndex;
+                if (failSecondBatch && index === 1) {
+                    res.writeHead(503).end();
+                    return;
+                }
+                for (let i = index * 10; i < Math.min((index + 1) * 10, 21); i++) {
+                    created.push(`shape-${i}`);
+                }
+                result = {
+                    content: [
+                        {
+                            type: "text",
+                            text: JSON.stringify({
+                                planId: scope.fileId,
+                                status: "success",
+                                hasMore: created.length < 21,
+                                steps: created.map((shapeId) => ({
+                                    tool: "create_rectangle",
+                                    shapeId,
+                                    status: "success",
+                                })),
+                            }),
+                        },
+                    ],
+                };
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+        });
+        const scope = {
+            fileId: "11111111-1111-4111-8111-111111111111",
+            pageId: "22222222-2222-4222-8222-222222222222",
+            selectedIds: [],
+            selectionCount: 0,
+        };
+        server.listen(0, "127.0.0.1");
+        await once(server, "listening");
+        const source = new McpDesignContextSource(scope, "tab");
+        try {
+            await source.connect(new URL(`http://127.0.0.1:${(server.address() as { port: number }).port}/mcp/agent`));
+            const result = await source.execute(scope, scope.fileId);
+            assert.equal(result.steps.length, failSecondBatch ? 10 : 21);
+            assert.equal(result.status, failSecondBatch ? "partial" : "success");
+            assert.equal(result.hasMore, false);
+            if (failSecondBatch) {
+                assert.match(result.message!, /不会重试/);
+            }
+        } finally {
+            await source.close();
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+    });
+}
