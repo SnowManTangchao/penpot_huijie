@@ -71,29 +71,31 @@ export class NativeDesignAgent {
         let questions: string[] = [];
         const proposedTools = this.prepare
             ? Object.fromEntries(
-                  Object.entries(designOperations).map(([name, schema]) => [
-                      name,
-                      tool({
-                          description:
-                              "仅规划：将此操作加入待确认预览，不执行。目标 ID 必须来自当前快照；创建对象位于当前页面根级。",
-                          inputSchema: z.object(
-                              Object.fromEntries(Object.entries(schema.shape).filter(([key]) => key !== "tool"))
-                          ),
-                          execute: async (args) => {
-                              const op = designOperationSchema.parse({ ...args, tool: name });
-                              if (
-                                  questions.length > 0 ||
-                                  proposals.length > 0 ||
-                                  operations.length >= 20 ||
-                                  ("shapeId" in op && !context.shapes.some((s) => s.id === op.shapeId))
-                              ) {
-                                  throw new Error("计划过大或目标不在当前快照内。");
-                              }
-                              operations.push(op);
-                              return { status: "awaiting_confirmation", step: operations.length };
-                          },
-                      }),
-                  ])
+                  Object.entries(designOperations)
+                      .filter(([name]) => !["create_image", "set_image"].includes(name))
+                      .map(([name, schema]) => [
+                          name,
+                          tool({
+                              description:
+                                  "仅规划：将此操作加入待确认预览，不执行。目标 ID 必须来自当前快照；创建对象位于当前页面根级。",
+                              inputSchema: z.object(
+                                  Object.fromEntries(Object.entries(schema.shape).filter(([key]) => key !== "tool"))
+                              ),
+                              execute: async (args) => {
+                                  const op = designOperationSchema.parse({ ...args, tool: name });
+                                  if (
+                                      questions.length > 0 ||
+                                      proposals.length > 0 ||
+                                      operations.length >= 20 ||
+                                      ("shapeId" in op && !context.shapes.some((s) => s.id === op.shapeId))
+                                  ) {
+                                      throw new Error("计划过大或目标不在当前快照内。");
+                                  }
+                                  operations.push(op);
+                                  return { status: "awaiting_confirmation", step: operations.length };
+                              },
+                          }),
+                      ])
               )
             : {};
         const empty = z.object({}).strict();

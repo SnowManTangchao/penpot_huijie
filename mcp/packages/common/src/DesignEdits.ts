@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { generationSummarySchema, qualityIssueSchema } from "./LayoutTree.ts";
+import { pngImageSchema } from "./AdvancedDesign.ts";
 
 const coordinate = z.number().min(-100000).max(100000);
 const dimension = z.number().min(0.01).max(100000);
@@ -22,6 +23,17 @@ const radius = z.number().min(0).max(100000);
 
 /** 固定写工具只描述数据；模型不接触执行权限、会话或代码。 */
 export const designOperations = {
+    create_image: z
+        .object({
+            tool: z.literal("create_image"),
+            name: creation.name,
+            ...bounds,
+            ref: reference.optional(),
+            parentRef: reference.optional(),
+            image: pngImageSchema,
+        })
+        .strict(),
+    set_image: z.object({ tool: z.literal("set_image"), ...target, image: pngImageSchema }).strict(),
     create_rectangle: z
         .object({ tool: z.literal("create_rectangle"), ...creation, borderRadius: radius.optional() })
         .strict(),
@@ -52,6 +64,8 @@ export const designOperations = {
     set_corner_radius: z.object({ tool: z.literal("set_corner_radius"), ...target, borderRadius: radius }).strict(),
 };
 export const designOperationSchema = z.discriminatedUnion("tool", [
+    designOperations.create_image,
+    designOperations.set_image,
     designOperations.create_rectangle,
     designOperations.create_text,
     designOperations.create_frame,

@@ -8,12 +8,15 @@ import { z } from "zod";
 import { editScopeSchema, executeDesignPlanSchema } from "@penpot/mcp-common";
 import { DesignPlanStore } from "./DesignPlanStore";
 import { AgentError } from "./AgentError";
+import { AdvancedDesignService, type ImageProvider } from "./AdvancedDesignService";
+import { AdvancedDesignRequest, advancedRequestSchema } from "./AdvancedDesignRequest";
 
 export interface AgentServerOptions {
     origin: string;
     backend: URL;
     mcp: URL;
     models: Map<string, LanguageModel>;
+    imageProvider?: ImageProvider;
 }
 
 /** 同源的原生助手入口；仅在内存处理当前请求，不保存聊天、设计数据或凭据。 */
@@ -24,9 +27,11 @@ export class AgentHttpServer {
     private readonly sessions: PenpotSession;
     private readonly active = new Set<string>();
     private readonly plans = new DesignPlanStore();
+    private readonly advanced: AdvancedDesignService;
 
     constructor(private readonly options: AgentServerOptions) {
         this.sessions = new PenpotSession(options.backend);
+        this.advanced = new AdvancedDesignService(options.imageProvider);
         if (options.mcp.pathname !== "/mcp/agent") {
             throw new Error("原生助手必须使用 /mcp/agent 受控工具入口。");
         }
@@ -46,7 +51,10 @@ export class AgentHttpServer {
     private async handle(req: IncomingMessage, res: ServerResponse) {
         const controller = new AbortController();
         let source: McpDesignContextSource | undefined;
-        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]);
+        const signal = AbortSignal.any([
+            controller.signal,
+            AbortSignal.timeout(req.url === "/api/agent/advanced" ? 180_000 : 90_000),
+        ]);
         res.on("close", () => {
             controller.abort();
             void source?.close().catch(() => undefined);
@@ -60,7 +68,8 @@ export class AgentHttpServer {
             const chat = req.method === "POST" && req.url === "/api/agent/chat";
             const confirm = req.method === "POST" && req.url === "/api/agent/confirm";
             const cancel = req.method === "POST" && req.url === "/api/agent/cancel";
-            if (!config && !chat && !confirm && !cancel) {
+            const advanced = req.method === "POST" && req.url === "/api/agent/advanced";
+            if (!config && !chat && !confirm && !cancel && !advanced) {
                 res.writeHead(404).end();
                 return;
             }
@@ -76,7 +85,13 @@ export class AgentHttpServer {
             if (config) {
                 await this.sessions.authenticate(req.headers.cookie, signal);
                 res.writeHead(200, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ models: [...this.options.models.keys()] }));
+                res.end(
+                    JSON.stringify({
+                        models: [...this.options.models.keys()],
+                        imageGeneration: Boolean(this.advanced.provider),
+                        codeTargets: ["html-css", "react-css"],
+                    })
+                );
                 return;
             }
             if (!req.headers["content-type"]?.startsWith("application/json")) {
@@ -87,7 +102,7 @@ export class AgentHttpServer {
             let bytes = 0;
             for await (const chunk of req) {
                 bytes += chunk.length;
-                if (bytes > 64_000) {
+                if (bytes > (advanced ? 6_000_000 : 64_000)) {
                     res.writeHead(413).end();
                     return;
                 }
@@ -95,6 +110,50 @@ export class AgentHttpServer {
             }
             stage = "请求无效，请缩短对话或重新打开 AI 面板。";
             const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (advanced) {
+                const request = advancedRequestSchema.parse(body);
+                stage = "请检查登录、文件权限与 MCP 连接。";
+                const session = await this.sessions.authorize(req.headers.cookie ?? "", request.fileId, signal);
+                if (this.active.has(session.profileId) || this.active.size >= 32) {
+                    res.writeHead(429).end();
+                    return;
+                }
+                owner = session.profileId;
+                this.active.add(owner);
+                source = new McpDesignContextSource(
+                    { fileId: request.fileId, pageId: request.pageId },
+                    request.sessionId
+                );
+                await source.connect(this.options.mcp, session.token);
+                stage = "高级设计请求失败，请检查图片格式、布局树和模型配置。";
+                const result = await new AdvancedDesignRequest(this.advanced).run(
+                    request,
+                    owner,
+                    await source.read(),
+                    this.options.models,
+                    signal
+                );
+                signal.throwIfAborted();
+                if ("operations" in result) {
+                    await this.sessions.authorize(req.headers.cookie ?? "", request.fileId, signal, true);
+                    const scope = editScopeSchema.parse({
+                        fileId: request.fileId,
+                        pageId: request.pageId,
+                        selectedIds: request.selectedIds,
+                        selectionCount: request.selectionCount,
+                    });
+                    const plan = await source.prepare(
+                        scope,
+                        result.operations,
+                        "generation" in result ? result.generation : undefined
+                    );
+                    this.plans.add(owner, request.sessionId, scope, plan);
+                    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ plan }));
+                } else {
+                    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
+                }
+                return;
+            }
             if (confirm || cancel) {
                 const request = executeDesignPlanSchema
                     .omit({ batchIndex: true })

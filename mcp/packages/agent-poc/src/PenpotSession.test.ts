@@ -59,8 +59,12 @@ test("binds backend identity and file permission to the login Cookie, never brow
         const agentUrl = `http://127.0.0.1:${(agent.server.address() as { port: number }).port}`;
         try {
             const config = await fetch(agentUrl + "/api/agent/config", { headers: { Cookie: "auth=alice" } });
-            assert.deepEqual(await config.json(), { models: [] });
-            for (const path of ["chat", "confirm", "cancel"]) {
+            assert.deepEqual(await config.json(), {
+                models: [],
+                imageGeneration: false,
+                codeTargets: ["html-css", "react-css"],
+            });
+            for (const path of ["chat", "confirm", "cancel", "advanced"]) {
                 const rejected = await fetch(agentUrl + "/api/agent/" + path, {
                     method: "POST",
                     headers: { Origin: "https://evil.example", Cookie: "auth=alice" },

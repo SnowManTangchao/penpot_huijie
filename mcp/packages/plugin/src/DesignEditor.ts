@@ -31,6 +31,7 @@ export class DesignEditor {
     private readonly api: Penpot;
     private generation = 0;
     private running = false;
+    private readonly imageIds = new WeakMap<DesignOperation, string>();
 
     constructor(api: Penpot) {
         this.api = api;
@@ -159,6 +160,8 @@ export class DesignEditor {
                     shape.blocked ||
                     shape.hidden ||
                     (op.tool === "set_text" && shape.type !== "text") ||
+                    (op.tool === "set_image" &&
+                        (shape.type !== "rectangle" || !shape.fills.some((fill) => fill.fillImage))) ||
                     (op.tool === "set_corner_radius" && shape.type !== "rectangle")
                 ) {
                     throw new Error("目标已锁定、隐藏或类型不符。");
@@ -303,6 +306,41 @@ export class DesignEditor {
                     if (shape && JSON.stringify(before) !== JSON.stringify(expected.get(shape.id))) {
                         throw new Error("目标已修改");
                     }
+                    if ("image" in op) {
+                        const bytes = Uint8Array.from(atob(op.image.data), (c) => c.charCodeAt(0));
+                        const image = await this.api.uploadMediaData("AI 图片", bytes, "image/png");
+                        this.assertScope(scope);
+                        if (
+                            entry.generation !== this.generation ||
+                            (shape && JSON.stringify(this.getSnapshot(shape)) !== JSON.stringify(before))
+                        ) {
+                            throw new Error("图片上传期间上下文已改变");
+                        }
+                        this.imageIds.set(op, image.id);
+                        // 先完成上传，再写入对象；替换只修改填充，保留对象身份与层级。
+                        if (op.tool === "set_image" && shape) {
+                            if (!Array.isArray(shape.fills)) {
+                                throw new Error("图片填充状态不明确");
+                            }
+                            const index = shape.fills.findIndex((fill) => fill.fillImage);
+                            shape.fills = shape.fills.map((fill, i) =>
+                                i === index ? { ...fill, fillImage: image } : fill
+                            );
+                        } else if (op.tool === "create_image") {
+                            shape = this.api.createRectangle();
+                            shape.fills = [{ fillImage: image, fillOpacity: 1 }];
+                            const parent = op.parentRef
+                                ? this.getShape(refs.get(op.parentRef)!)
+                                : this.api.currentPage!.root;
+                            if (!("appendChild" in parent)) {
+                                throw new Error("父对象不支持子节点");
+                            }
+                            parent.appendChild(shape);
+                            if (op.ref) {
+                                refs.set(op.ref, shape.id);
+                            }
+                        }
+                    }
                     if (!shape) {
                         switch (op.tool) {
                             case "create_rectangle":
@@ -345,6 +383,7 @@ export class DesignEditor {
                     const after = this.getSnapshot(this.getShape(shape.id));
                     if (
                         !this.matches(after, op) ||
+                        (op.tool === "set_image" && before && !this.matchesImageReplacement(before, after)) ||
                         ("parentRef" in op && op.parentRef && after.parentId !== refs.get(op.parentRef))
                     ) {
                         throw new Error("回读不符");
@@ -571,6 +610,11 @@ export class DesignEditor {
     private matches(after: EditSnapshot, op: DesignOperation): boolean {
         const close = (a: number, b: number) => Math.abs(a - b) < 0.01;
         return (
+            (!("image" in op) ||
+                (after.fills.some(
+                    (fill) => (fill.fillImage as { id?: string } | undefined)?.id === this.imageIds.get(op)
+                ) &&
+                    (op.tool !== "set_image" || after.type === "rectangle"))) &&
             (!("borderRadius" in op) ||
                 op.borderRadius === undefined ||
                 (after.cornerRadii?.length === 4 &&
@@ -590,5 +634,14 @@ export class DesignEditor {
             (op.tool !== "create_text" ||
                 (after.fontFamily === op.fontFamily && Number(after.fontSize) === op.fontSize))
         );
+    }
+
+    private matchesImageReplacement(before: EditSnapshot, after: EditSnapshot): boolean {
+        const index = before.fills.findIndex((fill) => fill.fillImage);
+        const withoutImage = (snapshot: EditSnapshot) => ({
+            ...snapshot,
+            fills: snapshot.fills.map((fill, i) => (i === index ? { ...fill, fillImage: null } : fill)),
+        });
+        return index >= 0 && JSON.stringify(withoutImage(before)) === JSON.stringify(withoutImage(after));
     }
 }

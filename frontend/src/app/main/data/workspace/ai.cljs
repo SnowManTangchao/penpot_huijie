@@ -59,6 +59,7 @@
 
 (def tool-labels
   {"create_rectangle" "创建矩形" "create_text" "创建文本" "create_frame" "创建画板"
+   "create_image" "插入生成图片" "set_image" "替换图片填充（保留对象）"
    "set_text" "修改文本" "set_fill" "替换为单个纯色填充" "set_bounds" "修改位置和尺寸"
    "set_corner_radius" "设置矩形圆角" "create_component" "复用组件"})
 
@@ -70,9 +71,52 @@
               (:cornerRadii operation) (conj (str "圆角（左上/右上/右下/左下）：" (str/join " / " (:cornerRadii operation))))
               (contains? operation :text) (conj (str "文本：" (:text operation)))
               (:color operation) (conj (str "填充：" (:color operation) "，不透明度 " (:opacity operation)))
+              (:image operation) (conj (str "PNG 图片：" (get-in operation [:image :width]) " × " (get-in operation [:image :height])))
               (:width operation) (conj (str "位置 (" (:x operation) ", " (:y operation) ")，尺寸 "
                                             (:width operation) " × " (:height operation)))
               (:fontFamily operation) (conj (str "字体：" (:fontFamily operation) " / " (:fontSize operation))))))
+
+(defn request-advanced
+  [scope action controller]
+  (p/let [response (js/fetch "/api/agent/advanced"
+                             #js {:method "POST" :credentials "same-origin"
+                                  :headers #js {"Content-Type" "application/json"}
+                                  :signal (.-signal controller)
+                                  :body (js/JSON.stringify (clj->js (assoc scope :action action)))})
+          body (.json response)]
+    (if (.-ok response)
+      (js->clj body :keywordize-keys true)
+      (throw (js/Error. (or (.-message body) "高级设计请求失败，请检查图片、布局与服务配置。"))))))
+
+(defn get-image-data-url
+  [image]
+  (str "data:image/png;base64," (:data image)))
+
+(defn read-png
+  [file]
+  (if (or (nil? file) (not= "image/png" (.-type file)) (> (.-size file) 2097152))
+    (p/rejected (js/Error. "请选择不超过 2 MB 的 PNG 图片。"))
+    (p/let [bitmap (js/createImageBitmap file)
+            width  (.-width bitmap)
+            height (.-height bitmap)
+            _      (.close bitmap)
+            _      (when (or (> width 4096) (> height 4096))
+                     (throw (js/Error. "图片宽高不能超过 4096。")))
+            data   (p/create (fn [resolve reject]
+                               (let [reader (js/FileReader.)]
+                                 (set! (.-onload reader) #(resolve (.-result reader)))
+                                 (set! (.-onerror reader) #(reject (js/Error. "无法读取图片。")))
+                                 (.readAsDataURL reader file))))]
+      {:data (second (str/split data #"," 2)) :width width :height height})))
+
+(defn download-code-file
+  [name content]
+  (let [url    (js/URL.createObjectURL (js/Blob. #js [content] #js {:type "text/plain;charset=utf-8"}))
+        anchor (.createElement js/document "a")]
+    (set! (.-href anchor) url)
+    (set! (.-download anchor) name)
+    (.click anchor)
+    (js/setTimeout #(js/URL.revokeObjectURL url) 1000)))
 
 (defn get-fill-summary
   [fills]

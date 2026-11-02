@@ -81,6 +81,7 @@ function fixture() {
             undoBlockFinish: () => {},
         },
         createRectangle: () => create(),
+        uploadMediaData: async () => ({ id: "99999999-9999-4999-8999-999999999999", width: 1, height: 1 }),
         createBoard: () => create("board"),
         createText: (text) => {
             const s = create("text");
@@ -107,6 +108,68 @@ function fixture() {
         },
     };
 }
+
+const png = {
+    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==",
+    width: 1,
+    height: 1,
+};
+
+test("image candidate is inserted only on confirmation and replacement preserves identity and geometry", async () => {
+    const f = fixture();
+    const plan = f.prepare([{ tool: "create_image", name: "候选", x: 200, y: 100, width: 1, height: 1, image: png }]);
+    assert.equal(f.shapes.size, 1);
+    const result = await f.editor.execute({ ...f.scope, planId: plan.id });
+    assert.equal(result.status, "success");
+    assert.equal(result.steps[0].after.fills[0].fillImage.id, "99999999-9999-4999-8999-999999999999");
+    f.shape.fills = [
+        { fillImage: { id: "old-image" }, fillOpacity: 0.6 },
+        { fillColor: "#123456", fillOpacity: 0.2 },
+    ];
+    const before = {
+        id: f.shape.id,
+        x: f.shape.x,
+        y: f.shape.y,
+        parent: f.shape.parent,
+        width: f.shape.width,
+        height: f.shape.height,
+    };
+    const replacement = f.prepare([{ tool: "set_image", shapeId: id, image: png }]);
+    assert.equal(f.shape.fills[0].fillImage.id, "old-image");
+    const replaced = await f.editor.execute({ ...f.scope, planId: replacement.id });
+    assert.equal(replaced.status, "success");
+    assert.equal(f.shape.fills[0].fillOpacity, 0.6);
+    assert.deepEqual(f.shape.fills[1], { fillColor: "#123456", fillOpacity: 0.2 });
+    assert.deepEqual(
+        {
+            id: f.shape.id,
+            x: f.shape.x,
+            y: f.shape.y,
+            parent: f.shape.parent,
+            width: f.shape.width,
+            height: f.shape.height,
+        },
+        before
+    );
+});
+
+test("image upload failure creates no blank shape and context change during upload prevents fill replacement", async () => {
+    const f = fixture();
+    f.api.uploadMediaData = async () => {
+        throw new Error("upload failed");
+    };
+    const plan = f.prepare([{ tool: "create_image", name: "候选", x: 0, y: 0, width: 1, height: 1, image: png }]);
+    assert.equal((await f.editor.execute({ ...f.scope, planId: plan.id })).status, "failed");
+    assert.equal(f.shapes.size, 1);
+    f.shape.fills = [{ fillImage: { id: "old-image" } }];
+    const replacement = f.prepare([{ tool: "set_image", shapeId: id, image: png }]);
+    f.api.uploadMediaData = async () => {
+        f.api.currentPage.id = crypto.randomUUID();
+        return { id: "new-image", width: 1, height: 1 };
+    };
+    assert.equal((await f.editor.execute({ ...f.scope, planId: replacement.id })).status, "failed");
+    assert.equal(f.shape.fills[0].fillImage.id, "old-image");
+});
 
 test("creates nested editable content in bounded batches and verifies parent links", async () => {
     const f = fixture();

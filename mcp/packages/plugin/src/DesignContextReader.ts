@@ -115,6 +115,7 @@ export class DesignContextReader {
 
     private snapshot(shape: Shape): DesignShape {
         const text = shape.type === "text" ? shape.characters : undefined;
+        const component = shape.isComponentHead?.() ? shape.component() : null;
         return {
             id: shape.id,
             name: shape.name.slice(0, 160),
@@ -125,6 +126,11 @@ export class DesignContextReader {
             width: shape.width,
             height: shape.height,
             hidden: shape.hidden,
+            ...(component ? { componentId: component.id } : {}),
+            hasImage: Array.isArray(shape.fills) && shape.fills.some((fill) => Boolean(fill.fillImage)),
+            ...(Array.isArray(shape.fills) && shape.fills.find((fill) => fill.fillImage)?.fillImage?.id
+                ? { imageAssetId: shape.fills.find((fill) => fill.fillImage)!.fillImage!.id }
+                : {}),
             ...(shape.type === "rectangle"
                 ? {
                       cornerRadii: [

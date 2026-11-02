@@ -2,6 +2,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { AgentHttpServer } from "./AgentHttpServer";
+import { CompatibleImageProvider } from "./AdvancedDesignService";
 
 async function main() {
     let apiKey = process.env.OPENAI_API_KEY;
@@ -33,6 +34,18 @@ async function main() {
         backend: new URL(process.env.PENPOT_BACKEND_URL ?? "http://127.0.0.1:6060/"),
         mcp: new URL(process.env.PENPOT_AGENT_MCP_URL ?? "http://localhost:4401/mcp/agent"),
         models: new Map(modelIds.map((id) => [id, provider.chatModel(id)])),
+        ...(process.env.AI_IMAGE_MODEL
+            ? {
+                  imageProvider: new CompatibleImageProvider(
+                      new URL(
+                          process.env.AI_IMAGE_BASE_URL ?? process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1/"
+                      ),
+                      process.env.AI_IMAGE_API_KEY ?? apiKey,
+                      process.env.AI_IMAGE_MODEL,
+                      process.env.AI_IMAGE_LICENSE ?? "依模型供应商条款；使用前核对商用与参考图权利"
+                  ),
+              }
+            : {}),
     });
     app.server.listen(Number(process.env.PENPOT_AGENT_PORT ?? 4404), "127.0.0.1", () =>
         console.log("Penpot 原生 AI 服务已启动。")

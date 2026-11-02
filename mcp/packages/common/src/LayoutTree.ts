@@ -27,6 +27,7 @@ export const layoutNodeSchema = z
         colorToken: z.string().max(160).optional(),
         typographyToken: z.string().max(160).optional(),
         componentId: z.string().max(160).optional(),
+        imageAssetId: z.string().uuid().optional(),
         text: z.string().min(1).max(4000).optional(),
         fontFamily: label.optional(),
         fontSize: z.number().min(1).max(1000).optional(),

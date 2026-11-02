@@ -31,6 +31,9 @@ export const designShapeSchema = z.object({
     cornerRadii: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
     fills: z.array(z.object({ color: label.optional(), opacity: z.number().optional() })).max(3),
     childrenTruncated: z.boolean(),
+    hasImage: z.boolean().optional(),
+    imageAssetId: z.string().uuid().optional(),
+    componentId: label.optional(),
 });
 
 export const designContextSchema = z.object({

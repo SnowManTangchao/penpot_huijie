@@ -21,6 +21,12 @@
     (is (= [{:type "delta" :text "你好"} {:type "done"}] (:events next-part)))
     (is (= "" (:pending next-part)))))
 
+(deftest image-previews-use-png-data-and-display-source-dimensions
+  (is (= "data:image/png;base64,aGVsbG8=" (ai/get-image-data-url {:data "aGVsbG8="})))
+  (is (str/includes? (ai/get-operation-summary {:tool "set_image" :image {:width 1024 :height 1536}})
+                     "1024 × 1536"))
+  (is (= "替换图片填充（保留对象）" (get ai/tool-labels "set_image"))))
+
 (deftest selects-only-offered-page-alternatives-before-confirmation
   (let [plans [{:id "a" :generation {:title "侧栏"}} {:id "b" :generation {:title "顶栏"}}]
         state (ai/apply-event ai/initial-state {:type "plans" :plans plans})]

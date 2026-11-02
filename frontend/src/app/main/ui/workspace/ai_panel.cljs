@@ -14,6 +14,7 @@
    [app.main.ui.ds.buttons.icon-button :refer [icon-button*]]
    [app.main.ui.ds.controls.select :refer [select*]]
    [app.main.ui.ds.foundations.assets.icon :as i]
+   [app.main.ui.workspace.ai-advanced :refer [ai-advanced*]]
    [app.util.dom :as dom]
    [clojure.string :as str]
    [promesa.core :as p]
@@ -24,6 +25,7 @@
   (let [state*      (mf/use-state ai/initial-state)
         state       @state*
         models*     (mf/use-state [])
+        image-gen*  (mf/use-state false)
         model*      (mf/use-state "")
         model       @model*
         controller* (mf/use-var nil)
@@ -119,6 +121,7 @@
                     ^js config (.json response)]
               (let [models (vec (.-models config))]
                 (reset! models* models)
+                (reset! image-gen* (boolean (.-imageGeneration config)))
                 (reset! model* (or (first models) ""))))
             (p/catch (fn [_]
                        (when-not (.-aborted (.-signal controller))
@@ -157,6 +160,15 @@
            [:> button* {:variant "secondary" :on-click #(st/emit! (mcp/connect-mcp))} "连接编辑器"]
            nil)])]
      [:div {:class (stl/css :conversation) :role "log" :aria-label "设计对话"}
+      [:> ai-advanced* {:key (str file-id page-id session-id selected)
+                        :scope {:fileId (str file-id) :pageId (str page-id) :sessionId session-id
+                                :selectedIds (mapv str (take 40 selected)) :selectionCount (count selected)}
+                        :model model :busy (or (:busy state) (some? (:plan state)) (seq (:plans state))) :connected connected
+                        :image-generation @image-gen*
+                        :controller-ref controller*
+                        :on-busy #(swap! state* assoc :busy %)
+                        :on-plan (fn [scope plan]
+                                   (swap! state* assoc :plan-scope scope :plan plan :plans [] :execution nil))}]
       (when (empty? (:messages state))
         [:div {:class (stl/css :empty)}
          [:h3 {:class (stl/css :empty-title)} "规划页面或修改当前设计"]
@@ -233,7 +245,10 @@
                         {})))])
                 (when (:parentRef operation)
                   [:span {:class (stl/css :helper)} "父区域：" (:parentRef operation)])
-                [:p {:class (stl/css :helper)} "修改后：" (ai/get-operation-summary operation)]]))]]
+                [:p {:class (stl/css :helper)} "修改后：" (ai/get-operation-summary operation)]
+                (when-let [image (:image operation)]
+                  [:img {:class (stl/css :image-preview)
+                         :src (ai/get-image-data-url image) :alt "确认后将插入或替换的图片"}])]))]]
          [:p {:class (stl/css :helper)} "每批最多 10 个操作。失败或取消后保留已完成修改和对象记录，可按批使用原生撤销恢复。"]
          [:div {:class (stl/css :actions)}
           [:> button* {:variant "secondary" :disabled (:busy state) :on-click #(decide "cancel")} "取消计划"]

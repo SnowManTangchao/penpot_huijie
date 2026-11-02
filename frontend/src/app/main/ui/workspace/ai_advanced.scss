@@ -1,0 +1,58 @@
+@use "ds/_borders.scss" as *;
+@use "ds/_sizes.scss" as *;
+@use "ds/typography.scss" as *;
+
+.advanced {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-s);
+  padding: var(--sp-m);
+  border-block-end: $b-1 solid var(--color-background-quaternary);
+}
+
+.title,
+.label {
+  @include use-typography("headline-small");
+  color: var(--color-foreground-primary);
+}
+
+.helper {
+  @include use-typography("body-small");
+  color: var(--color-foreground-secondary);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-s);
+}
+
+.input {
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: var(--sp-s);
+  color: var(--color-foreground-primary);
+  background: var(--color-background-secondary);
+  border: $b-1 solid var(--color-background-quaternary);
+}
+
+.preview {
+  display: block;
+  max-inline-size: 100%;
+  max-block-size: $sz-252;
+  object-fit: contain;
+}
+
+.code {
+  overflow: auto;
+  max-block-size: $sz-252;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--color-foreground-primary);
+}
+
+.error {
+  color: var(--color-foreground-primary);
+  border-inline-start: $b-2 solid var(--color-accent-error);
+  padding-inline-start: var(--sp-s);
+}

@@ -14,6 +14,12 @@
   background-color: var(--color-background-primary);
 }
 
+.image-preview {
+  max-inline-size: 100%;
+  max-block-size: $sz-200;
+  object-fit: contain;
+}
+
 .header {
   display: flex;
   align-items: center;
