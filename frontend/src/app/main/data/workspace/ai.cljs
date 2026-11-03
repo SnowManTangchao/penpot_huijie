@@ -4,8 +4,31 @@
    [promesa.core :as p]))
 
 (def initial-state
-  {:messages [] :draft "" :answer "" :tools {} :context nil :citations [] :busy false :error nil
+  {:messages [] :draft "" :image nil :answer "" :tools {} :context nil :citations [] :busy false :error nil
    :plan nil :plans [] :plan-scope nil :execution nil :executing false :cancelling false})
+
+(defn send-on-enter?
+  [^js event]
+  (and (= "Enter" (.-key event))
+       (not (.-shiftKey event))
+       (not (.-isComposing event))
+       (not (when-let [^js native (.-nativeEvent event)] (.-isComposing native)))
+       (not= 229 (.-keyCode event))))
+
+(defn get-pasted-image
+  [clipboard]
+  (some (fn [item]
+          (when (and (= "file" (.-kind item)) (str/starts-with? (.-type item) "image/"))
+            (.getAsFile item)))
+        (array-seq (.-items clipboard))))
+
+(defn get-chat-messages
+  [messages]
+  (let [recent (vec (take-last 10 messages))
+        image-index (last (keep-indexed #(when (:image %2) %1) recent))]
+    (mapv (fn [index message]
+            (select-keys message (if (= index image-index) [:role :content :image] [:role :content])))
+          (range) recent)))
 
 (defn get-connection-state
   [feature-enabled {:keys [enabled token-valid connection-status session-id]}]
@@ -108,6 +131,30 @@
                                  (set! (.-onerror reader) #(reject (js/Error. "无法读取图片。")))
                                  (.readAsDataURL reader file))))]
       {:data (second (str/split data #"," 2)) :width width :height height})))
+
+(defn read-chat-image
+  [file]
+  (cond
+    (or (nil? file) (not (contains? #{"image/png" "image/jpeg" "image/webp"} (.-type file)))
+        (> (.-size file) 2097152))
+    (p/rejected (js/Error. "请选择不超过 2 MB 的 PNG、JPEG 或 WebP 图片。"))
+
+    (= "image/png" (.-type file))
+    (read-png file)
+
+    :else
+    (p/let [bitmap (js/createImageBitmap file)]
+      (try
+        (when (or (> (.-width bitmap) 4096) (> (.-height bitmap) 4096))
+          (throw (js/Error. "图片宽高不能超过 4096。")))
+        (let [canvas (.createElement js/document "canvas")]
+          (set! (.-width canvas) (.-width bitmap))
+          (set! (.-height canvas) (.-height bitmap))
+          (.drawImage (.getContext canvas "2d") bitmap 0 0)
+          (p/let [blob (p/create (fn [resolve reject]
+                                   (.toBlob canvas #(if % (resolve %) (reject (js/Error. "无法读取图片。"))) "image/png")))]
+            (read-png blob)))
+        (finally (.close bitmap))))))
 
 (defn download-code-file
   [name content]

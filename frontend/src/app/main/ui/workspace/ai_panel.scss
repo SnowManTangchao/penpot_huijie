@@ -187,6 +187,24 @@
   padding: var(--sp-m);
   margin-block-start: var(--sp-s);
   border-block-start: $b-1 solid var(--color-background-quaternary);
+  flex-shrink: 0;
+}
+
+.attachment {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-s);
+  padding: var(--sp-s);
+  border: $b-1 solid var(--color-background-quaternary);
+  border-radius: $br-8;
+  background-color: var(--color-background-secondary);
+}
+
+.attachment-preview {
+  inline-size: $sz-48;
+  block-size: $sz-48;
+  object-fit: contain;
+  border-radius: $br-8;
 }
 
 .question {

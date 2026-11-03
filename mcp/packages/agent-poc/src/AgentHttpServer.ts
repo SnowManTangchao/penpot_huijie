@@ -16,6 +16,7 @@ export interface AgentServerOptions {
     backend: URL;
     mcp: URL;
     models: Map<string, LanguageModel>;
+    reasoning?: "low" | "medium" | "high";
     imageProvider?: ImageProvider;
 }
 
@@ -53,7 +54,9 @@ export class AgentHttpServer {
         let source: McpDesignContextSource | undefined;
         const signal = AbortSignal.any([
             controller.signal,
-            AbortSignal.timeout(req.url === "/api/agent/advanced" ? 180_000 : 90_000),
+            AbortSignal.timeout(
+                req.url === "/api/agent/chat" ? 240_000 : req.url === "/api/agent/advanced" ? 180_000 : 90_000
+            ),
         ]);
         res.on("close", () => {
             controller.abort();
@@ -102,7 +105,7 @@ export class AgentHttpServer {
             let bytes = 0;
             for await (const chunk of req) {
                 bytes += chunk.length;
-                if (bytes > (advanced ? 6_000_000 : 64_000)) {
+                if (bytes > (advanced || req.url === "/api/agent/chat" ? 6_000_000 : 64_000)) {
                     res.writeHead(413).end();
                     return;
                 }
@@ -235,7 +238,8 @@ export class AgentHttpServer {
                     this.plans.add(session.profileId, request.sessionId, scope, plan);
                     return plan;
                 },
-                this.plans.getHistory(session.profileId, request.sessionId, scope)
+                this.plans.getHistory(session.profileId, request.sessionId, scope),
+                this.options.reasoning
             ).answer(request, signal)) {
                 if (event.type === "context") {
                     await this.send(
@@ -255,8 +259,17 @@ export class AgentHttpServer {
                     res.writeHead(400, { "Content-Type": "application/x-ndjson; charset=utf-8" });
                 }
                 res.end(
-                    JSON.stringify({ type: "error", message: error instanceof AgentError ? error.message : stage }) +
-                        "\n"
+                    JSON.stringify({
+                        type: "error",
+                        message:
+                            signal.aborted && signal.reason?.name === "TimeoutError"
+                                ? req.url === "/api/agent/chat"
+                                    ? "设计生成超时，请缩小生成范围后重试。本轮未执行画布修改。"
+                                    : `请求超时。${stage}`
+                                : error instanceof AgentError
+                                  ? error.message
+                                  : stage,
+                    }) + "\n"
                 );
             }
         } finally {

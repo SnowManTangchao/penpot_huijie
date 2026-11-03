@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { AgentHttpServer } from "./AgentHttpServer";
 import { CompatibleImageProvider } from "./AdvancedDesignService";
+import { z } from "zod";
 
 async function main() {
     let apiKey = process.env.OPENAI_API_KEY;
@@ -30,6 +31,7 @@ async function main() {
         headers: { "User-Agent": "penpot-native-agent/0.1.0", "x-opencode-session": randomUUID() },
     });
     const app = new AgentHttpServer({
+        reasoning: z.enum(["low", "medium", "high"]).optional().parse(process.env.AI_REASONING_EFFORT),
         origin: new URL(process.env.PENPOT_AGENT_ORIGIN).origin,
         backend: new URL(process.env.PENPOT_BACKEND_URL ?? "http://127.0.0.1:6060/"),
         mcp: new URL(process.env.PENPOT_AGENT_MCP_URL ?? "http://localhost:4401/mcp/agent"),

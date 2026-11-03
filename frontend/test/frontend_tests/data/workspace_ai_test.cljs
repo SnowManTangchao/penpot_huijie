@@ -14,6 +14,31 @@
    [frontend-tests.tokens.helpers.state :as tohs]
    [potok.v2.core :as ptk]))
 
+(deftest enter-sends-but-newlines-and-input-composition-do-not
+  (is (ai/send-on-enter? #js {:key "Enter"}))
+  (doseq [event [#js {:key "Enter" :shiftKey true}
+                 #js {:key "Enter" :isComposing true}
+                 #js {:key "Enter" :keyCode 229}
+                 #js {:key "a"}]]
+    (is (not (ai/send-on-enter? event)))))
+
+(deftest clipboard-images-are-selected-without-consuming-plain-text
+  (let [image #js {:type "image/png"}
+        text  #js {:kind "string" :type "text/plain"}
+        item  #js {:kind "file" :type "image/png" :getAsFile (fn [] image)}]
+    (is (identical? image (ai/get-pasted-image #js {:items #js [text item]})))
+    (is (nil? (ai/get-pasted-image #js {:items #js [text]})))))
+
+(deftest sends-latest-reference-image-with-bounded-conversation-history
+  (let [messages [{:role "user" :content "旧图" :image {:data "old"}}
+                  {:role "assistant" :content "回答" :context {:private "snapshot"}}
+                  {:role "user" :content "新图" :image {:data "new"}}]
+        request  (ai/get-chat-messages messages)]
+    (is (= [{:role "user" :content "旧图"}
+            {:role "assistant" :content "回答"}
+            {:role "user" :content "新图" :image {:data "new"}}] request))
+    (is (= 10 (count (ai/get-chat-messages (repeat 20 {:role "user" :content "问题"})))))))
+
 (deftest handles-split-network-events
   (let [first-part (ai/parse-chunk "" "{\"type\":\"del")
         next-part  (ai/parse-chunk (:pending first-part) "ta\",\"text\":\"你好\"}\n{\"type\":\"done\"}\n")]

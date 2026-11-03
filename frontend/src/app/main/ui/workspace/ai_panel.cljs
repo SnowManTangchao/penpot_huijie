@@ -29,6 +29,8 @@
         model*      (mf/use-state "")
         model       @model*
         controller* (mf/use-var nil)
+        image-read* (mf/use-var nil)
+        upload-ref  (mf/use-ref nil)
         mcp-state   (mf/deref refs/mcp)
         file        (mf/deref refs/file)
         page        (mf/deref refs/workspace-page)
@@ -80,17 +82,19 @@
                        (dom/prevent-default event)
                        (when (and connected (not (:busy state)) (nil? (:plan state)) (empty? (:plans state))
                                   (not (empty? model))
-                                  (not (str/blank? (:draft state))))
+                                  (not (:reading-image state))
+                                  (or (:image state) (not (str/blank? (:draft state)))))
                          (let [controller (js/AbortController.)
                                messages   (conj (vec (take-last 10 (:messages state)))
-                                                {:role "user" :content (:draft state)})
+                                                (cond-> {:role "user" :content (if (str/blank? (:draft state)) "请分析这张参考图。" (:draft state))}
+                                                  (:image state) (assoc :image (:image state))))
                                request    {:fileId (str file-id) :pageId (str page-id)
                                            :sessionId session-id :model model
                                            :selectedIds (mapv str (take 40 selected))
                                            :selectionCount (count selected)
-                                           :messages (mapv #(select-keys % [:role :content]) messages)}]
+                                           :messages (ai/get-chat-messages messages)}]
                            (reset! controller* controller)
-                           (swap! state* assoc :busy true :error nil :draft "" :answer ""
+                           (swap! state* assoc :busy true :error nil :draft "" :image nil :answer ""
                                   :messages messages :tools {} :context nil :plan nil :plans [] :execution nil
                                   :plan-scope (select-keys request [:fileId :pageId :sessionId :selectedIds :selectionCount]))
                            (-> (ai/stream-chat request controller
@@ -103,11 +107,23 @@
                                                    {:type "error" :message (.-message error)}))))
                                (p/finally (fn []
                                             (when (identical? controller @controller*)
-                                              (reset! controller* nil)))))))))]
+                                              (reset! controller* nil)))))))))
+        attach      (fn [file]
+                      (let [token (js-obj)]
+                        (reset! image-read* token)
+                        (swap! state* assoc :reading-image true :error nil)
+                        (-> (ai/read-chat-image file)
+                            (p/then #(when (identical? token @image-read*)
+                                       (swap! state* assoc :image %)))
+                            (p/catch #(when (identical? token @image-read*)
+                                        (swap! state* assoc :error (.-message %))))
+                            (p/finally #(when (identical? token @image-read*)
+                                          (swap! state* assoc :reading-image false))))))]
     (mf/with-effect [file-id page-id session-id]
       (stop)
+      (reset! image-read* nil)
       (reset! state* ai/initial-state)
-      #(stop))
+      #(do (reset! image-read* nil) (stop)))
 
     (mf/with-effect [selected]
       (when (or (:busy @state*) (:plan @state*) (seq (:plans @state*)))
@@ -176,6 +192,8 @@
       (for [[index message] (map-indexed vector (:messages state))]
         [:article {:key index :class (stl/css :message)}
          [:span {:class (stl/css :message-author)} (if (= "user" (:role message)) "你" "AI")]
+         (when-let [image (:image message)]
+           [:img {:class (stl/css :image-preview) :src (ai/get-image-data-url image) :alt "发送的参考图"}])
          [:p {:class (stl/css :answer)} (:content message)]
          (for [id (:citations message)]
            (let [shape (some #(when (= id (:id %)) %) (get-in message [:context :shapes]))]
@@ -297,7 +315,7 @@
                "get_design_system" "读取设计规范与组件"
                "propose_page_layout" "规划页面布局"
                "request_design_clarification" "整理待澄清问题"} name (str "规划：" (get ai/tool-labels name name)))
-         " · " (if (= status "complete") "已完成" "读取中…")])
+         " · " (case status "complete" "已完成" "retrying" "正在校正参数…" "处理中…")])
       (when (get-in state [:context :truncated]) [:p {:class (stl/css :helper)} "上下文已截断，回答仅基于已读取的图层。"])
       (when (:busy state)
         [:p {:class (stl/css :helper)}
@@ -305,19 +323,42 @@
      (when (:error state) [:p {:class (stl/css :error) :role "alert"} (:error state)])
      [:form {:class (stl/css :composer) :on-submit send}
       [:label {:for "ai-question" :class (stl/css :label)} "设计问题"]
+      (when-let [image (:image state)]
+        [:div {:class (stl/css :attachment)}
+         [:img {:class (stl/css :attachment-preview) :src (ai/get-image-data-url image) :alt "待发送的参考图"}]
+         [:span {:class (stl/css :helper)} "参考图 · " (:width image) " × " (:height image)]
+         [:> icon-button* {:variant "ghost" :icon i/close :aria-label "移除参考图" :disabled (:busy state)
+                           :on-click #(swap! state* assoc :image nil)}]])
       [:textarea {:id "ai-question" :class (stl/css :question) :value (:draft state) :max-length 4000 :rows 3
                   :disabled (:busy state)
-                  :placeholder "例如：为设备操作员生成工业风仪表盘，包含侧栏、指标卡和告警列表"
+                  :placeholder "描述设计需求，或直接粘贴参考图…"
+                  :on-key-down #(when (ai/send-on-enter? %) (send %))
+                  :on-paste #(when-let [file (ai/get-pasted-image (.-clipboardData %))]
+                               (dom/prevent-default %)
+                               (attach file))
                   :on-change #(swap! state* assoc :draft (dom/get-target-val %))}]
+      [:input {:ref upload-ref :type "file" :hidden true :accept "image/png,image/jpeg,image/webp"
+               :aria-label "选择参考图" :disabled (:busy state)
+               :on-change #(when-let [file (aget (.-files (.-target %)) 0)]
+                             (attach file)
+                             (set! (.-value (.-target %)) ""))}]
+      [:div {:class (stl/css :actions)}
+       [:> button* {:variant "ghost" :disabled (or (:busy state) (:reading-image state))
+                    :on-click #(some-> (mf/ref-val upload-ref) .click)}
+        (if (:reading-image state) "读取图片…" "添加图片")]
+       [:span {:class (stl/css :helper)} "Enter 发送 · Shift+Enter 换行"]]
+      (when (:image state)
+        [:p {:class (stl/css :helper)} "图片将随消息发送至当前模型；需选择支持图片的模型。"])
       (when-not connected
         [:p {:class (stl/css :helper)} "完成编辑器连接后即可发送。"])
       [:div {:class (stl/css :actions)}
        [:> button* {:variant "ghost" :disabled (:busy state)
-                    :on-click #(reset! state* ai/initial-state)} "新对话"]
+                    :on-click #(do (reset! image-read* nil) (reset! state* ai/initial-state))} "新对话"]
        (if (:busy state)
          (if (:executing state)
            [:> button* {:variant "secondary" :disabled (:cancelling state) :on-click cancel-running}
             (if (:cancelling state) "正在取消…" "取消后续生成")]
            [:> button* {:variant "secondary" :on-click stop} "停止"])
          [:> button* {:type "submit" :variant "primary" :disabled (or (not connected) (empty? model) (some? (:plan state)) (seq (:plans state))
-                                                                      (str/blank? (:draft state)))} "发送"])]]]))
+                                                                      (:reading-image state)
+                                                                      (and (nil? (:image state)) (str/blank? (:draft state))))} "发送"])]]]))

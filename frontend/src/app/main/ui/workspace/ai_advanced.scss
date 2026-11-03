@@ -3,21 +3,48 @@
 @use "ds/typography.scss" as *;
 
 .advanced {
+  margin-block: var(--sp-m);
+  border: $b-1 solid var(--color-background-quaternary);
+  border-radius: $br-8;
+  background-color: var(--color-background-secondary);
+}
+
+.content {
   display: flex;
   flex-direction: column;
   gap: var(--sp-s);
   padding: var(--sp-m);
+  border-block-start: $b-1 solid var(--color-background-quaternary);
+}
+
+.title {
+  padding: var(--sp-m);
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: $b-1 solid var(--color-accent-primary);
+    border-radius: $br-8;
+  }
+}
+
+.content hr {
+  inline-size: 100%;
+  margin-block: var(--sp-s);
+  border: 0;
   border-block-end: $b-1 solid var(--color-background-quaternary);
 }
 
 .title,
 .label {
   @include use-typography("headline-small");
+
   color: var(--color-foreground-primary);
 }
 
 .helper {
   @include use-typography("body-small");
+
+  margin: 0;
   color: var(--color-foreground-secondary);
 }
 
@@ -28,12 +55,38 @@
 }
 
 .input {
+  @include use-typography("body-small");
+
   inline-size: 100%;
   min-inline-size: 0;
   padding: var(--sp-s);
   color: var(--color-foreground-primary);
   background: var(--color-background-secondary);
   border: $b-1 solid var(--color-background-quaternary);
+  border-radius: $br-8;
+
+  &:focus-visible {
+    outline: $b-1 solid var(--color-accent-primary);
+  }
+}
+
+.content input[type="file"] {
+  @include use-typography("body-small");
+
+  inline-size: 100%;
+  min-inline-size: 0;
+  color: var(--color-foreground-secondary);
+
+  &::file-selector-button {
+    margin-inline-end: var(--sp-s);
+    padding: var(--sp-s);
+    border: $b-1 solid var(--color-background-quaternary);
+    border-radius: $br-8;
+    background-color: var(--color-background-tertiary);
+    color: var(--color-foreground-primary);
+    font: inherit;
+    cursor: pointer;
+  }
 }
 
 .preview {

@@ -40,6 +40,69 @@ const request = chatRequestSchema.parse({
     messages: [{ role: "user", content: "选区是什么？" }],
 });
 
+const screenshot = {
+    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNoYPgPAAKDAYCtaVe6AAAAAElFTkSuQmCC",
+    width: 1,
+    height: 1,
+};
+
+test("图片消息经过校验后将图片字节传给模型", async () => {
+    const input = chatRequestSchema.parse({
+        ...request,
+        messages: [{ role: "user", content: "参考这张截图", image: screenshot }],
+    });
+    const llm = model(`截图参考 [购买](penpot-shape:${shapeId})。`);
+    for await (const _event of new NativeDesignAgent(llm, { read: async () => context }, undefined, [], "low").answer(
+        input,
+        AbortSignal.timeout(5000)
+    )) {
+    }
+    const user = llm.doStreamCalls[0].prompt.find((message) => message.role === "user");
+    assert.ok(user && Array.isArray(user.content));
+    const image = user.content.find((part) => part.type === "file");
+    assert.ok(image && image.data.type === "data");
+    const bytes =
+        typeof image.data.data === "string" ? Buffer.from(image.data.data, "base64") : Buffer.from(image.data.data);
+    assert.deepEqual(bytes, Buffer.from(screenshot.data, "base64"));
+    assert.equal(llm.doStreamCalls[0].reasoning, "low");
+});
+
+test("拒绝伪造图片和助手消息中的图片", () => {
+    for (const message of [
+        { role: "user", content: "图片", image: { ...screenshot, data: "https://example.com/image.png" } },
+        { role: "assistant", content: "图片", image: screenshot },
+    ]) {
+        assert.equal(
+            chatRequestSchema.safeParse({ ...request, messages: [message, ...request.messages] }).success,
+            false
+        );
+    }
+});
+
+test("模型等待超时保留超时原因，不误报为模型或工具错误", async () => {
+    const controller = new AbortController();
+    const llm = new MockLanguageModelV4({
+        doStream: async () => ({
+            stream: new ReadableStream({
+                start(stream) {
+                    controller.abort(new DOMException("model deadline", "TimeoutError"));
+                    stream.error(controller.signal.reason);
+                },
+            }),
+        }),
+    });
+    await assert.rejects(
+        async () => {
+            for await (const _event of new NativeDesignAgent(llm, { read: async () => context }).answer(
+                request,
+                controller.signal
+            )) {
+            }
+        },
+        { name: "TimeoutError" }
+    );
+});
+
 function model(answer: string) {
     const finish = {
         type: "finish",
@@ -144,6 +207,113 @@ function toolModel(name: string, input: unknown) {
     return llm;
 }
 
+test("模型修正无效参数后仍能提交有效预览，修正前不生成计划", async () => {
+    const llm = toolModel("set_fill", { shapeId, color: "invalid", opacity: 1 });
+    const original = llm.doStream;
+    const operation = { tool: "set_fill" as const, shapeId, color: "#0000FF", opacity: 1 };
+    let step = 0;
+    llm.doStream = async (options) => {
+        if (++step !== 3) {
+            return original(options);
+        }
+        return {
+            stream: new ReadableStream({
+                start(controller) {
+                    controller.enqueue({
+                        type: "tool-call",
+                        toolCallId: "corrected",
+                        toolName: "set_fill",
+                        input: JSON.stringify({ shapeId, color: operation.color, opacity: 1 }),
+                    });
+                    controller.enqueue({
+                        type: "finish",
+                        finishReason: { unified: "tool-calls", raw: "tool_calls" },
+                        usage: {
+                            inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+                            outputTokens: { total: 10, text: 10, reasoning: 0 },
+                        },
+                    });
+                    controller.close();
+                },
+            }),
+        };
+    };
+    const events: AgentEvent[] = [];
+    let saved: unknown;
+    const agent = new NativeDesignAgent(llm, { read: async () => context }, async (operations) => {
+        saved = operations;
+        return { id: fileId, expiresAt: Date.now() + 300000, outsideSelection: false, targets: [], operations };
+    });
+    for await (const event of agent.answer(request, AbortSignal.timeout(5000))) {
+        events.push(event);
+        if (event.type === "tool" && event.status === "retrying") {
+            assert.equal(saved, undefined);
+        }
+    }
+    assert.deepEqual(saved, [operation]);
+    assert.ok(events.some((event) => event.type === "tool" && event.status === "retrying"));
+    assert.equal(events.at(-1)?.type, "done");
+});
+
+test("校验失败且未修正时不生成预览或报告成功", async () => {
+    let saved: unknown;
+    const agent = new NativeDesignAgent(
+        toolModel("set_fill", { shapeId, color: "invalid", opacity: 1 }),
+        { read: async () => context },
+        async (operations) => {
+            saved = operations;
+            return { id: fileId, expiresAt: Date.now() + 300000, outsideSelection: false, targets: [], operations };
+        }
+    );
+    const events: AgentEvent[] = [];
+    await assert.rejects(async () => {
+        for await (const event of agent.answer(request, AbortSignal.timeout(5000))) events.push(event);
+    }, /未能修正操作参数/);
+    assert.equal(saved, undefined);
+    assert.equal(
+        events.some((event) => ["plan", "plans", "done"].includes(event.type)),
+        false
+    );
+});
+
+test("其他有效操作不能掩盖尚未修正的参数错误", async () => {
+    const llm = toolModel("set_fill", { shapeId, color: "invalid", opacity: 1 });
+    const original = llm.doStream;
+    let step = 0;
+    llm.doStream = async (options) => {
+        const result = await original(options);
+        if (++step !== 2) return result;
+        return {
+            ...result,
+            stream: result.stream.pipeThrough(
+                new TransformStream({
+                    transform(part, controller) {
+                        if (part.type === "finish") {
+                            controller.enqueue({
+                                type: "tool-call",
+                                toolCallId: "unrelated",
+                                toolName: "set_text",
+                                input: JSON.stringify({ shapeId, text: "有效文字" }),
+                            });
+                        }
+                        controller.enqueue(part);
+                    },
+                })
+            ),
+        };
+    };
+    let saved: unknown;
+    const agent = new NativeDesignAgent(llm, { read: async () => context }, async (operations) => {
+        saved = operations;
+        return { id: fileId, expiresAt: Date.now() + 300000, outsideSelection: false, targets: [], operations };
+    });
+    await assert.rejects(async () => {
+        for await (const _event of agent.answer(request, AbortSignal.timeout(5000))) {
+        }
+    }, /未能修正操作参数/);
+    assert.equal(saved, undefined);
+});
+
 test("whole-page alternatives stay preview-only and carry their validated layout summaries", async () => {
     const page = {
         title: "设备仪表盘",
@@ -170,6 +340,14 @@ test("whole-page alternatives stay preview-only and carry their validated layout
             },
         ],
     });
+    const original = llm.doStream;
+    let step = 0;
+    llm.doStream = async (options) => {
+        if (++step > 2) {
+            throw new Error("方案已经通过校验，后续说明请求超时不应阻塞预览。");
+        }
+        return original(options);
+    };
     const prepared: unknown[] = [];
     const events: AgentEvent[] = [];
     for await (const event of new NativeDesignAgent(
